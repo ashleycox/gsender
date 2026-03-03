@@ -1,4 +1,4 @@
-import { GRBL_ACTIVE_STATES, GRBL_HAL_ACTIVE_STATES } from '../constants';
+import { GRBL_ACTIVE_STATES, GRBL_HAL_ACTIVE_STATES } from '../constants/index';
 
 // Types
 

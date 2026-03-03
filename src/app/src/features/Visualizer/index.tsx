@@ -664,6 +664,14 @@ class Visualizer extends Component {
 
     workflowControl = null;
 
+    handleStoreChange = () => {
+        const storeUnits = store.get('workspace.units');
+        const { units } = this.state;
+        if (units !== storeUnits) {
+            this.setState({ units: storeUnits });
+        }
+    };
+
     componentDidMount() {
         this.subscribe();
 
@@ -675,16 +683,9 @@ class Visualizer extends Component {
             }
         })*/
 
-        store.on('change', () => {
-            const storeUnits = store.get('workspace.units');
-            const { units } = this.state;
-            if (units !== storeUnits) {
-                this.setState({ units: storeUnits });
-            }
-        });
+        store.on('change', this.handleStoreChange);
         this.addShuttleControlEvents();
         useKeybinding(this.shuttleControlEvents);
-        this.subscribe();
 
         if (!WebGL.isWebGLAvailable() && !this.state.disabled) {
             displayWebGLErrorMessage();
@@ -700,6 +701,7 @@ class Visualizer extends Component {
     componentWillUnmount() {
         this.unsubscribe();
         this.removeShuttleControlEvents();
+        store.removeListener('change', this.handleStoreChange);
         this.unsubscribe();
     }
 

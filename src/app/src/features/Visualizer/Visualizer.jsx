@@ -504,7 +504,12 @@ class Visualizer extends Component {
         // Whether to show cutting tool or cutting pointer
         if (this.cuttingTool && this.laserPointer && this.cuttingPointer) {
             // if connected, set visibility
-            if (isConnected) {
+            if (this.props.forceShowTool) {
+                this.cuttingTool.visible = true;
+                this.laserPointer.visible = false;
+                this.cuttingPointer.visible = false;
+                needUpdateScene = true;
+            } else if (isConnected) {
                 const { liteMode } = state;
                 const isLaser = isLaserMode();
                 this.cuttingTool.visible =
@@ -2917,6 +2922,7 @@ class Visualizer extends Component {
 
 Visualizer.defaultProps = {
     isSecondary: false,
+    forceShowTool: false,
 };
 
 export default connect(

@@ -164,7 +164,13 @@ class CNCEngine {
             path: '/socket.io',
             pingTimeout: 60000,
             pingInterval: 25000,
-            maxHttpBufferSize: 40e6
+            maxHttpBufferSize: 40e6,
+            allowEIO3: true,
+            transports: ['polling', 'websocket'],
+            cors: {
+                origin: '*',
+                methods: ['GET', 'POST']
+            }
         });
 
         this.io.use(async (socket, next) => {

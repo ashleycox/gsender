@@ -79,12 +79,14 @@ const ButtonControlGroup = () => {
             },
         );
         // Always update context on store change so latest config is present
-        store.on('change', () => {
+        const handleStoreChange = () => {
             updateToolchangeContext();
-        });
+        };
+        store.on('change', handleStoreChange);
 
         return () => {
             pubsub.unsubscribe(token);
+            store.removeListener('change', handleStoreChange);
         };
     }, []);
 

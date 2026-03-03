@@ -294,9 +294,18 @@ class Controller {
         this.socket = this.io(host, options).connect();
 
         this.socket.on('disconnect', (reason) => {
+            console.warn('Socket disconnected:', reason);
             if (reason !== 'io client disconnect') {
                 this.reconnect();
             }
+        });
+
+        this.socket.on('connect_error', (err) => {
+            console.error('Socket connection error:', err);
+        });
+
+        this.socket.on('error', (err) => {
+            console.error('Socket error:', err);
         });
 
         Object.keys(this.listeners).forEach((eventName) => {

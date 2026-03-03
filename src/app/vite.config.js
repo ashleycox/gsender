@@ -42,6 +42,8 @@ export default defineConfig({
         alias: {
             app: path.resolve(__dirname, './src'),
             '@': path.resolve(__dirname, './src'),
+            '@emotion/react': path.resolve(__dirname, '../../node_modules/@emotion/react'),
+            '@emotion/styled': path.resolve(__dirname, '../../node_modules/@emotion/styled'),
         },
     },
     define: {},
@@ -51,7 +53,13 @@ export default defineConfig({
         },
     },
     optimizeDeps: {
-        include: ['**/*.styl'],
+        include: ['**/*.styl', '@emotion/react', '@emotion/styled', '@mui/material'],
+    },
+    worker: {
+        format: 'es',
+        plugins: [
+            tsconfigPaths(),
+        ],
     },
     build: {
         sourcemap: true,

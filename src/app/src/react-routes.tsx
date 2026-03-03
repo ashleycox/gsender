@@ -41,6 +41,8 @@ import Console from 'app/features/Console';
 import Profile from './features/Gamepad/Profile';
 import RotarySurfacing from './features/Rotary/RotarySurfacing';
 import ConfirmationDialog from './components/ConfirmationDialog/ConfirmationDialog';
+import CAM from './features/CAM';
+import { LuWrench } from 'react-icons/lu';
 
 export const ReactRoutes = () => {
     return (
@@ -72,6 +74,13 @@ export const ReactRoutes = () => {
                                 </p>
 
                                 <div className="grid lg:grid-cols-3 grid-cols-2 gap-4 fixed-select-tool-area overflow-y-auto overflow-x-hidden">
+                                    <ToolCard
+                                        title="CAM"
+                                        description="Convert SVG, DXF, or STL files to GCode for milling"
+                                        icon={LuWrench}
+                                        link="/tools/cam"
+                                    />
+
                                     <ToolCard
                                         title="Surfacing"
                                         description="Flatten your wasteboard or other non-flat stock"
@@ -122,6 +131,18 @@ export const ReactRoutes = () => {
                                     />
                                 </div>
                             </div>
+                        }
+                    />
+                    <Route
+                        path="cam"
+                        element={
+                            <Page
+                                title="CAM Tool"
+                                withGoBackButton
+                                withFixedArea
+                            >
+                                <CAM />
+                            </Page>
                         }
                     />
                     <Route

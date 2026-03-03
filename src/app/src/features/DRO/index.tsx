@@ -112,11 +112,15 @@ function DRO({
 
     useEffect(() => {
         setRotaryFunctionsEnabled(store.get('widgets.rotary.tab.show', false));
-        store.on('change', () => {
+        const handleStoreChange = () => {
             setRotaryFunctionsEnabled(
                 store.get('widgets.rotary.tab.show', false),
             );
-        });
+        };
+        store.on('change', handleStoreChange);
+        return () => {
+            store.removeListener('change', handleStoreChange);
+        };
     }, []);
 
     const jogToCorner = useCallback((corner: string) => {

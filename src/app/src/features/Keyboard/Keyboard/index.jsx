@@ -102,6 +102,7 @@ const Keyboard = () => {
             CARVING_CATEGORY: 'bg-green-100 text-green-800',
             OVERRIDES_CATEGORY: 'bg-blue-100 text-blue-800',
             LOCATION_CATEGORY: 'bg-gray-100 text-gray-800',
+            CAM_CATEGORY: 'bg-orange-100 text-orange-800',
         };
 
         return {

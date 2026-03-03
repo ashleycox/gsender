@@ -25,7 +25,7 @@ export const AccessibilityAnnouncer: React.FC = () => {
     const [statusMessage, setStatusMessage] = useState('');
     const [progressMessage, setProgressMessage] = useState('');
     const [summaryMessage, setSummaryMessage] = useState('');
-    
+    const [camMessage, setCamMessage] = useState('');
     const lastAnnouncedProgress = useRef(0);
     const prevStatus = useRef(activeState);
     const audioContext = useRef<AudioContext | null>(null);
@@ -124,6 +124,17 @@ export const AccessibilityAnnouncer: React.FC = () => {
             pubsub.unsubscribe(token);
         };
     }, [audioCues]);
+
+    // CAM Announcements
+    useEffect(() => {
+        const token = pubsub.subscribe('cam:announce', (_, message) => {
+            setCamMessage(message);
+            setTimeout(() => setCamMessage(''), 5000);
+        });
+        return () => {
+            pubsub.unsubscribe(token);
+        };
+    }, []);
 
     // Progress Announcements
     useEffect(() => {
@@ -266,6 +277,7 @@ export const AccessibilityAnnouncer: React.FC = () => {
                 <div aria-live="assertive">{statusMessage}</div>
                 <div aria-live="polite">{progressMessage}</div>
                 <div aria-live="polite">{summaryMessage}</div>
+                <div aria-live="polite">{camMessage}</div>
             </div>
             {gcodeSummary.enabled && gcodeSummary.showVisually && summaryMessage && (
                 <div className="bg-blue-50 dark:bg-blue-900/30 border-l-4 border-blue-500 p-4 mb-4 mx-4 rounded-r-md text-sm text-blue-700 dark:text-blue-200">

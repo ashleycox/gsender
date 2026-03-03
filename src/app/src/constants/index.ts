@@ -179,6 +179,7 @@ export const SPINDLE_LASER = {
 };
 
 export const ALL_CATEGORY = 'All';
+export const CAM_CATEGORY = 'CAM';
 export const CARVING_CATEGORY = 'Carving';
 export const OVERRIDES_CATEGORY = 'Overrides';
 export const VISUALIZER_CATEGORY = 'Visualizer';
@@ -193,6 +194,7 @@ export const COOLANT_CATEGORY = 'Coolant';
 export const ALL_CATEGORIES = [
     // keep in alphabetical order
     ALL_CATEGORY,
+    CAM_CATEGORY,
     CARVING_CATEGORY,
     COOLANT_CATEGORY,
     GENERAL_CATEGORY,
@@ -208,6 +210,7 @@ export const ALL_CATEGORIES = [
 export const SHORTCUT_CATEGORY = {
     // keep in alphabetical order
     // ALL_CATEGORY: 'All',
+    CAM_CATEGORY: 'CAM',
     CARVING_CATEGORY: 'Carving',
     OVERRIDES_CATEGORY: 'Overrides',
     VISUALIZER_CATEGORY: 'Visualizer',
@@ -366,6 +369,7 @@ export const USAGE_TOOL_NAME = {
     COOLANT: 'COOLANT',
     SPINDLE_LASER: 'SPINDLE_LASER',
     ROTARY: 'ROTARY',
+    CAM: 'CAM',
     DIAGNOSTICS: 'DIAGNOSTICS',
     SURFACING: 'SURFACING',
     XY_SQUARING: 'XY_SQUARING',

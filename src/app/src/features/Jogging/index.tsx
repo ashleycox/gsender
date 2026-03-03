@@ -78,14 +78,19 @@ export function Jogging() {
     });
 
     useEffect(() => {
-        store.on('change', () => {
+        const handleStoreChange = () => {
             // Update jog threshold if it's different
             const newThreshold = store.get('widgets.axes.jog.threshold', 200);
             if (newThreshold !== jogThreshold) {
                 setJogThreshold(newThreshold);
             }
-        });
-    }, []);
+        };
+
+        store.on('change', handleStoreChange);
+        return () => {
+            store.removeListener('change', handleStoreChange);
+        };
+    }, [jogThreshold]);
 
     useEffect(() => {
         jogHelper.current?.updateThreshold(jogThreshold);

@@ -52,15 +52,20 @@ export function PortListings(props: PortListingsProps): JSX.Element {
         const ip = store.get('widgets.connection.ip', []);
         const ipString = ip.join('.');
         setIP(ipString);
-    }, []);
 
-    store.on('change', () => {
-        const ip = store.get('widgets.connection.ip', []);
-        const baudrate = store.get('widgets.connection.baudrate', 115200);
-        const ipString = ip.join('.');
-        setIP(ipString);
-        setBaud(baudrate);
-    });
+        const handleStoreChange = () => {
+            const ip = store.get('widgets.connection.ip', []);
+            const baudrate = store.get('widgets.connection.baudrate', 115200);
+            const ipString = ip.join('.');
+            setIP(ipString);
+            setBaud(baudrate);
+        };
+
+        store.on('change', handleStoreChange);
+        return () => {
+            store.removeListener('change', handleStoreChange);
+        };
+    }, []);
 
     function toggleUnrecognizedPorts(e: React.MouseEvent) {
         e.stopPropagation();

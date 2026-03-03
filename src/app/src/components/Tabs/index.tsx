@@ -50,15 +50,18 @@ export const Tabs = ({ items = [] }: TabbedProps) => {
 
     const scrollTabs = (direction: 'left' | 'right') => {
         if (tabsRef.current) {
-            const scrollAmount = 100;
+            const scrollAmount = 150;
             const newScrollLeft =
                 tabsRef.current.scrollLeft +
                 (direction === 'left' ? -scrollAmount : scrollAmount);
+            
             tabsRef.current.scrollTo({
                 left: newScrollLeft,
                 behavior: 'smooth',
             });
-            checkScrollability();
+            
+            // Wait for smooth scroll to finish before checking scrollability
+            setTimeout(checkScrollability, 300);
         }
     };
 

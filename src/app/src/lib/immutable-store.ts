@@ -38,6 +38,7 @@ class ImmutableStore<T extends object = object> extends events.EventEmitter {
     constructor(state = {} as T) {
         super();
 
+        this.setMaxListeners(0); // Unlimited listeners
         this.state = state;
     }
 

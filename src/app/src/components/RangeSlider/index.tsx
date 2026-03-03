@@ -52,7 +52,7 @@ const RangeSlider = ({
     max = 100,
     percentage,
     value,
-    defaultPercentage = [...percentage],
+    defaultPercentage = percentage ? [...percentage] : [100],
     showText,
     colour = 'bg-blue-400',
     onChange = null,

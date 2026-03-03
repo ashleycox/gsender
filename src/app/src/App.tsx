@@ -27,6 +27,7 @@ function App() {
                 const host = '';
                 const options = {
                     query: 'token=' + token,
+                    transports: ['polling', 'websocket'],
                 };
                 controller.connect(host, options);
                 return;
