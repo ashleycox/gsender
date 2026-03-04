@@ -3,9 +3,10 @@ import { Button } from '../../../components/Button';
 
 interface FileSelectorProps {
     onFileSelect: (file: File) => void;
+    hasFeatures?: boolean;
 }
 
-const FileSelector = ({ onFileSelect }: FileSelectorProps) => {
+const FileSelector = ({ onFileSelect, hasFeatures }: FileSelectorProps) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -29,9 +30,11 @@ const FileSelector = ({ onFileSelect }: FileSelectorProps) => {
             <Button onClick={() => fileInputRef.current?.click()}>
                 Upload Design (SVG, DXF, STL, STEP, Image)
             </Button>
-            <span className="text-sm italic" aria-live="polite">
-                Select a file to begin
-            </span>
+            {!hasFeatures && (
+                <span className="text-sm italic" aria-live="polite">
+                    Select a file to begin
+                </span>
+            )}
         </div>
     );
 };

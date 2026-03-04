@@ -22,7 +22,7 @@ import CAMAccessibility from './utils/CAMAccessibility';
 import { saveAsDialog } from '../../lib/file-save';
 import useKeybinding from '../../lib/useKeybinding';
 import { toast } from '../../lib/toaster';
-import { FolderOpen, Save, AlertTriangle, RefreshCcw, Undo2, Redo2, MessageSquareText, FileText, Wand2 } from 'lucide-react';
+import { FolderOpen, Save, AlertTriangle, RefreshCcw, Undo2, Redo2, MessageSquareText, FileText, Wand2, HelpCircle } from 'lucide-react';
 import SafetyChecklist from './components/SafetyChecklist';
 import ParametricWizards from './components/ParametricWizards';
 import NestingEngine from './utils/NestingEngine';
@@ -39,6 +39,7 @@ const CAM = () => {
     const [showNarrative, setShowNarrative] = useState(false);
     const [showEditor, setShowEditor] = useState(false);
     const [showWizards, setShowWizards] = useState(false);
+    const [showHelp, setShowHelp] = useState(false);
     const projectInputRef = useRef<HTMLInputElement>(null);
     
     const featurePanelRef = useRef<HTMLElement>(null);
@@ -530,6 +531,16 @@ const CAM = () => {
         navigate('/');
     };
 
+    const handleReset = () => {
+        if (features.length === 0 || window.confirm("Are you sure you want to reset the current CAM session? All unsaved changes will be lost.")) {
+            setFile(null);
+            setFeatures([]);
+            setGcode('');
+            setHasError(false);
+            CAMAccessibility.announce("Reset.");
+        }
+    };
+
     const handleEditorUpdate = (newGcode: string) => {
         setGcode(newGcode);
         const file = new File([newGcode], 'gsender_cam.gcode');
@@ -614,41 +625,160 @@ const CAM = () => {
             {showChecklistModal && <SafetyChecklist onConfirm={handleConfirmSafety} onCancel={() => setShowChecklistModal(false)} />}
             {showWizards && <ParametricWizards features={features} settings={settings} onGenerate={handleWizardGenerate} onClose={() => setShowWizards(false)} />}
             
-            <header className="flex justify-between items-center p-2 border-b bg-gray-50/50 dark:bg-dark-light">
-                <div className="flex items-center gap-4">
-                    <FileSelector onFileSelect={handleFileSelect} />
-                    <Button onClick={() => setShowWizards(true)} variant="outline" size="sm" className="flex items-center gap-2">
-                        <Wand2 size={16} /> Create Parametric
-                    </Button>
-                    <div className="h-6 w-px bg-gray-300 dark:bg-gray-700" />
-                    <Button onClick={() => projectInputRef.current?.click()} variant="outline" size="sm" className="flex items-center gap-2">
-                        <FolderOpen size={16} /> Open Project (.gcam)
-                    </Button>
-                    <input type="file" ref={projectInputRef} onChange={handleLoadProject} accept=".gcam" className="hidden" />
-                    
-                    <div className="flex gap-1 ml-2">
-                        <Button onClick={handleUndo} disabled={historyIdx <= 0} variant="outline" size="mini" title="Undo (Ctrl+Z)"><Undo2 size={14} /></Button>
-                        <Button onClick={handleRedo} disabled={historyIdx >= history.length - 1} variant="outline" size="mini" title="Redo (Ctrl+Y)"><Redo2 size={14} /></Button>
+            <header className="flex flex-col border-b bg-gray-50/50 dark:bg-dark-light">
+                <div className="flex justify-between items-center p-2">
+                    <div className="flex items-center gap-4">
+                        <FileSelector onFileSelect={handleFileSelect} hasFeatures={features.length > 0} />
+                        <div className="flex flex-col items-center">
+                            <Button 
+                                onClick={() => setShowWizards(true)} 
+                                variant="outline" 
+                                size="sm" 
+                                className="flex items-center gap-2"
+                                tooltip={{ content: "Open the parametric wizard to create common shapes and designs." }}
+                            >
+                                <Wand2 size={16} /> Create Parametric
+                            </Button>
+                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Add geometric shapes</span>}
+                        </div>
+                        <div className="h-6 w-px bg-gray-300 dark:bg-gray-700" />
+                        <div className="flex flex-col items-center">
+                            <Button 
+                                onClick={() => projectInputRef.current?.click()} 
+                                variant="outline" 
+                                size="sm" 
+                                className="flex items-center gap-2"
+                                tooltip={{ content: "Open an existing gSender CAM project file (.gcam)." }}
+                            >
+                                <FolderOpen size={16} /> Open Project (.gcam)
+                            </Button>
+                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Load .gcam project</span>}
+                        </div>
+                        <input type="file" ref={projectInputRef} onChange={handleLoadProject} accept=".gcam" className="hidden" />
+                        
+                        <div className="flex gap-1 ml-2">
+                            <div className="flex flex-col items-center">
+                                <Button 
+                                    onClick={handleUndo} 
+                                    disabled={historyIdx <= 0} 
+                                    variant="outline" 
+                                    size="mini" 
+                                    title="Undo (Ctrl+Z)"
+                                    tooltip={{ content: "Undo the last action." }}
+                                >
+                                    <Undo2 size={14} />
+                                </Button>
+                                {showHelp && <span className="text-[10px] text-gray-500 mt-1">Revert change</span>}
+                            </div>
+                            <div className="flex flex-col items-center">
+                                <Button 
+                                    onClick={handleRedo} 
+                                    disabled={historyIdx >= history.length - 1} 
+                                    variant="outline" 
+                                    size="mini" 
+                                    title="Redo (Ctrl+Y)"
+                                    tooltip={{ content: "Redo the last undone action." }}
+                                >
+                                    <Redo2 size={14} />
+                                </Button>
+                                {showHelp && <span className="text-[10px] text-gray-500 mt-1">Restore change</span>}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex gap-2">
+                        <div className="flex flex-col items-center">
+                            <Button 
+                                onClick={printSetupSheet} 
+                                disabled={features.length === 0} 
+                                variant="outline" 
+                                size="sm" 
+                                className="gap-2"
+                                tooltip={{ content: "Print a job setup sheet with stock details and required tools." }}
+                            >
+                                <FileText size={16} /> Print Setup
+                            </Button>
+                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Export job details</span>}
+                        </div>
+                        {gcode && (
+                            <div className="flex flex-col items-center">
+                                <Button 
+                                    onClick={() => setShowEditor(!showEditor)} 
+                                    variant="outline" 
+                                    size="sm" 
+                                    className={cx("gap-2", showEditor && "bg-blue-100 border-blue-500 dark:bg-blue-900/30")}
+                                    tooltip={{ content: showEditor ? "Hide the G-Code editor." : "Open the G-Code editor to manually inspect or modify generated code." }}
+                                >
+                                    <FileText size={16} /> {showEditor ? "Hide Code" : "View Code"}
+                                </Button>
+                                {showHelp && <span className="text-[10px] text-gray-500 mt-1">Inspect/edit code</span>}
+                            </div>
+                        )}
+                        <div className="flex flex-col items-center">
+                            <Button 
+                                onClick={() => setShowNarrative(!showNarrative)} 
+                                variant="outline" 
+                                size="sm" 
+                                className={cx("gap-2", showNarrative && "bg-blue-100 border-blue-500 dark:bg-blue-900/30")}
+                                tooltip={{ content: showNarrative ? "Hide the toolpath narrative." : "Show a text description of the toolpaths for accessibility." }}
+                            >
+                                <MessageSquareText size={16} /> {showNarrative ? "Hide Narrative" : "Narrative"}
+                            </Button>
+                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Read description</span>}
+                        </div>
+                        <div className="flex flex-col items-center">
+                            <Button 
+                                onClick={handleSaveProject} 
+                                disabled={features.length === 0} 
+                                variant="outline" 
+                                size="sm" 
+                                className="flex items-center gap-2"
+                                tooltip={{ content: "Save the current design, tools, and settings as a .gcam project file." }}
+                            >
+                                <Save size={16} /> Save Project (.gcam)
+                            </Button>
+                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Save all settings</span>}
+                        </div>
+                        <div className="flex flex-col items-center">
+                            <Button 
+                                onClick={() => setIsWizardMode(true)} 
+                                size="sm"
+                                tooltip={{ content: "Open the step-by-step guided setup wizard." }}
+                            >
+                                Wizard
+                            </Button>
+                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Guided step-by-step</span>}
+                        </div>
+                        <div className="flex flex-col items-center">
+                            <Button 
+                                onClick={handleReset} 
+                                size="sm" 
+                                variant="ghost"
+                                tooltip={{ content: "Clear all features and reset the session. Requires confirmation if features are present." }}
+                            >
+                                Reset
+                            </Button>
+                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Clear and start over</span>}
+                        </div>
+                        <div className="h-8 w-px bg-gray-300 dark:bg-gray-700 mx-2 self-center" />
+                        <div className="flex flex-col items-center">
+                            <Button 
+                                onClick={() => setShowHelp(!showHelp)} 
+                                size="sm" 
+                                variant={showHelp ? "primary" : "ghost"}
+                                className="gap-2"
+                                tooltip={{ content: "Toggle Help Mode to show descriptions for all toolbar functions." }}
+                            >
+                                <HelpCircle size={16} /> {showHelp ? "Help ON" : "Help"}
+                            </Button>
+                            {showHelp && <span className="text-[10px] text-blue-500 mt-1 font-bold italic">Toggle labels</span>}
+                        </div>
                     </div>
                 </div>
-                <div className="flex gap-2">
-                    <Button onClick={printSetupSheet} disabled={features.length === 0} variant="outline" size="sm" className="gap-2">
-                        <FileText size={16} /> Print Setup
-                    </Button>
-                    {gcode && (
-                        <Button onClick={() => setShowEditor(!showEditor)} variant="outline" size="sm" className={cx("gap-2", showEditor && "bg-blue-100 border-blue-500 dark:bg-blue-900/30")}>
-                            <FileText size={16} /> {showEditor ? "Hide Code" : "View Code"}
-                        </Button>
-                    )}
-                    <Button onClick={() => setShowNarrative(!showNarrative)} variant="outline" size="sm" className={cx("gap-2", showNarrative && "bg-blue-100 border-blue-500 dark:bg-blue-900/30")}>
-                        <MessageSquareText size={16} /> {showNarrative ? "Hide Narrative" : "Narrative"}
-                    </Button>
-                    <Button onClick={handleSaveProject} disabled={features.length === 0} variant="outline" size="sm" className="flex items-center gap-2">
-                        <Save size={16} /> Save
-                    </Button>
-                    <Button onClick={() => setIsWizardMode(true)} size="sm">Wizard</Button>
-                    <Button onClick={() => { setFile(null); setFeatures([]); setGcode(''); setHasError(false); CAMAccessibility.announce("Reset."); }} size="sm" variant="ghost">Reset</Button>
-                </div>
+                {showHelp && (
+                    <div className="px-4 pb-2 text-[11px] text-blue-600 dark:text-blue-400 italic bg-blue-50/50 dark:bg-blue-900/10 border-t border-blue-100 dark:border-blue-900/30">
+                        Help Mode Active: Button descriptions are shown below each action. Use the "Wizard" for a guided experience.
+                    </div>
+                )}
             </header>
 
             <div className="flex flex-1 overflow-hidden gap-4">

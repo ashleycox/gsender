@@ -9,7 +9,7 @@ import { Info, Move, Crosshair, AlertTriangle, ChevronUp, ChevronDown, ChevronLe
 import Tooltip from '../../../components/Tooltip';
 import RangeSlider from '../../../components/RangeSlider';
 import { Button } from '../../../components/Button';
-import { useWorkspaceState } from '../../../hooks/useWorkspaceState';
+import { useTypedSelector } from '../../../hooks/useTypedSelector';
 import controller from '../../../lib/controller';
 import { stopContinuousJog, startJogCommand } from '../../Jogging/utils/Jogging';
 import { toast } from '../../../lib/toaster';
@@ -35,9 +35,8 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
     const [setupAssistant, setSetupAssistant] = useState(false);
     const [jogType, setJogType] = useState<'rapid' | 'normal' | 'precise'>('normal');
 
-    const workspace = useWorkspaceState() as any;
-    const wpos = workspace?.controller?.wpos || { x: 0, y: 0, z: 0 };
-    const isConnected = workspace?.controller?.connected || false;
+    const wpos = useTypedSelector(state => state.controller.wpos) || { x: 0, y: 0, z: 0 };
+    const isConnected = useTypedSelector(state => state.connection.isConnected);
 
     // Pull native settings from the store ( respects 'Configure' tab )
     const jogSettings = useMemo(() => {
@@ -199,6 +198,7 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                     className="h-7 w-7 p-0 rounded-full" 
                     onClick={() => setIsMoveMode(!isMoveMode)}
                     title={isMoveMode ? "Disable Move Mode" : "Enable Move Mode (Drag elements)"}
+                    aria-label={isMoveMode ? "Disable Move Mode" : "Enable Move Mode"}
                     aria-pressed={isMoveMode}
                 >
                     <Move size={14} />
@@ -210,6 +210,7 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                     className="h-7 px-2 gap-1 rounded-full" 
                     onClick={() => setSetupAssistant(!setupAssistant)}
                     title="Toggle Live Setup Assistant"
+                    aria-label="Toggle Live Setup Assistant"
                 >
                     <Crosshair size={14} /> Setup
                 </Button>

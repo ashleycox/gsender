@@ -281,7 +281,7 @@ const GCodeEditor = ({ originalGcode, onUpdate, onClose }: GCodeEditorProps) => 
                         </div>
                     )}
                 </div>
-                <Button variant="ghost" size="mini" onClick={onClose} className="hover:bg-red-50 hover:text-red-500">
+                <Button variant="ghost" size="mini" onClick={onClose} aria-label="Close G-Code Editor" className="hover:bg-red-50 hover:text-red-500">
                     <X size={16} />
                 </Button>
             </div>
