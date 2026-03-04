@@ -9,7 +9,7 @@ import { Info, Move, Crosshair, AlertTriangle, ChevronUp, ChevronDown, ChevronLe
 import Tooltip from '../../../components/Tooltip';
 import RangeSlider from '../../../components/RangeSlider';
 import { Button } from '../../../components/Button';
-import { useTypedSelector } from '../../../hooks/useTypedSelector';
+import { useWorkspaceState } from '../../../hooks/useWorkspaceState';
 import controller from '../../../lib/controller';
 import { stopContinuousJog, startJogCommand } from '../../Jogging/utils/Jogging';
 import { toast } from '../../../lib/toaster';
@@ -35,8 +35,9 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
     const [setupAssistant, setSetupAssistant] = useState(false);
     const [jogType, setJogType] = useState<'rapid' | 'normal' | 'precise'>('normal');
 
-    const wpos = useTypedSelector(state => state.controller.wpos) || { x: 0, y: 0, z: 0 };
-    const isConnected = useTypedSelector(state => state.connection.isConnected);
+    const workspace = useWorkspaceState() as any;
+    const wpos = workspace?.controller?.wpos || { x: 0, y: 0, z: 0 };
+    const isConnected = workspace?.controller?.connected || false;
 
     // Pull native settings from the store ( respects 'Configure' tab )
     const jogSettings = useMemo(() => {
@@ -46,7 +47,7 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
             normal: config.normal || { xyStep: 1, zStep: 1, feedrate: 2000 },
             precise: config.precise || { xyStep: 0.1, zStep: 0.1, feedrate: 500 }
         };
-    }, [setupAssistant]);
+    }, []);
 
     const activeJog = jogSettings[jogType];
     const jogHelper = useRef<JogHelper | null>(null);
@@ -105,7 +106,6 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
         };
     }, []);
 
-    // Reset scrub when gcode changes
     useEffect(() => {
         setScrubValue(0);
     }, [gcode]);
@@ -127,7 +127,6 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
         const dx = e.clientX - lastMousePos.x;
         const dy = e.clientY - lastMousePos.y;
         
-        // Find the first selected top-level feature to initiate the move
         const target = features.find(f => f.selected && !f.parentId);
         if (target) {
             const sensitivity = settings.units === 'mm' ? 0.5 : 0.02;
@@ -143,16 +142,6 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
         }
         setIsDragging(false);
     };
-
-    if (!gcode && features.length === 0) {
-        return (
-            <div className="flex flex-col h-full items-center justify-center bg-gray-900">
-                <p className="text-gray-500 text-center text-sm">
-                    Upload a file to preview the design.
-                </p>
-            </div>
-        );
-    }
 
     const getThemeColors = () => {
         const theme = settings.visualTheme || 'default';
@@ -182,6 +171,16 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
     }, [features, settings.stockWidth, settings.stockLength]);
 
     const isSpindleOutOfBounds = wpos.x < 0 || wpos.x > settings.stockWidth || wpos.y < 0 || wpos.y > settings.stockLength;
+
+    if (!gcode && features.length === 0) {
+        return (
+            <div className="flex flex-col h-full items-center justify-center bg-gray-900">
+                <p className="text-gray-500 text-center text-sm">
+                    Upload a file to preview the design.
+                </p>
+            </div>
+        );
+    }
 
     return (
         <div 
@@ -220,7 +219,6 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                     className="h-7 w-7 p-0 rounded-full" 
                     onClick={() => setIsMoveMode(!isMoveMode)}
                     title={isMoveMode ? "Disable Move Mode" : "Enable Move Mode (Drag elements)"}
-                    aria-label={isMoveMode ? "Disable Move Mode" : "Enable Move Mode"}
                     aria-pressed={isMoveMode}
                 >
                     <Move size={14} />
@@ -232,7 +230,6 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                     className="h-7 px-2 gap-1 rounded-full" 
                     onClick={() => setSetupAssistant(!setupAssistant)}
                     title="Toggle Live Setup Assistant"
-                    aria-label="Toggle Live Setup Assistant"
                 >
                     <Crosshair size={14} /> Setup
                 </Button>
@@ -240,12 +237,6 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                 <div className="bg-black/50 px-2 py-1 rounded text-[10px] text-gray-400 border border-gray-700 uppercase tracking-wider font-bold">
                     {settings.millingSide} Side | {settings.zOrigin} Origin
                 </div>
-
-                {isDesignOutOfBounds && (
-                    <div className="bg-red-600 px-2 py-1 rounded text-[10px] text-white flex items-center gap-1 animate-pulse font-bold border border-red-400 shadow-lg">
-                        <AlertTriangle size={12} /> Design Out of Bounds
-                    </div>
-                )}
             </div>
 
             {setupAssistant && isConnected && (
@@ -261,7 +252,6 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                         <span className="text-gray-500">WPOS Z:</span> <span className="font-mono text-right">{wpos.z.toFixed(3)}</span>
                     </div>
 
-                    {/* Integrated Jogging Controls (Respecting Workspace Config) */}
                     <div className="bg-gray-900/50 p-2 rounded border border-gray-700 mb-3">
                         <div className="flex justify-between items-center mb-2 px-1">
                             <span className="text-[9px] uppercase font-bold text-gray-500">Speed Preset</span>
@@ -282,7 +272,6 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                         </div>
 
                         <div className="flex gap-4 items-center justify-center py-1">
-                            {/* XY Pad */}
                             <div className="grid grid-cols-3 gap-1">
                                 <div />
                                 <Button variant="outline" size="mini" className="h-7 w-7 p-0" onMouseDown={() => handleJog({y: 1})} onMouseUp={() => jogHelper.current?.onKeyUp()}><ChevronUp size={14}/></Button>
@@ -295,7 +284,6 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                                 <div />
                             </div>
 
-                            {/* Z Column */}
                             <div className="flex flex-col gap-1 border-l border-gray-700 pl-4">
                                 <Button variant="outline" size="mini" className="h-7 w-7 p-0" onMouseDown={() => handleJog({z: 1})} onMouseUp={() => jogHelper.current?.onKeyUp()}><ChevronUp size={14}/></Button>
                                 <div className="h-7 w-7 flex items-center justify-center font-bold text-gray-500 text-[10px]">Z</div>

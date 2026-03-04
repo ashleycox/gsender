@@ -181,7 +181,7 @@ export default class FileParser {
     static generatePreviewGcode(features: CAMFeature[]): string {
         const lines: string[] = ['(Design Ghost Preview)', 'G21', 'G90'];
         features.forEach(f => {
-            if (f.points.length < 2) return;
+            if (!f.points || f.points.length < 2) return;
             lines.push(`(Feature: ${f.name})`);
             lines.push(`G0 Z10.000`); 
             lines.push(`G0 X${f.points[0].x.toFixed(3)} Y${f.points[0].y.toFixed(3)}`);

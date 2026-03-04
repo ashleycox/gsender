@@ -225,6 +225,10 @@ const GlobalSettings = ({ designBounds }: GlobalSettingsProps) => {
                 <label className="text-sm font-bold text-gray-700 dark:text-gray-300 block mb-1">Start G-Code</label>
                 <Textarea value={settings.startGcode} onChange={(e) => handleValueChange('startGcode', e.target.value)} className="text-[10px] font-mono h-12 bg-gray-50 dark:bg-dark" placeholder="G53 G0 Z0..." />
             </div>
+            <div className="p-3">
+                <label className="text-sm font-bold text-gray-700 dark:text-gray-300 block mb-1">End G-Code</label>
+                <Textarea value={settings.endGcode} onChange={(e) => handleValueChange('endGcode', e.target.value)} className="text-[10px] font-mono h-12 bg-gray-50 dark:bg-dark" placeholder="M5; G53 G0 Z0..." />
+            </div>
 
             <SectionHeader title="3D Visualization" />
             <SettingRow 
@@ -245,6 +249,18 @@ const GlobalSettings = ({ designBounds }: GlobalSettingsProps) => {
                 label="Solid Simulation"
                 description="Preview material removal during simulation."
                 control={<Switch checked={!!settings.solidSimulation} onChange={(checked) => handleValueChange('solidSimulation', checked)} />}
+            />
+
+            <SectionHeader title="Output Control" />
+            <SettingRow 
+                label="Include Comments"
+                description="Embed descriptive comments and feature names in G-Code."
+                control={<Switch checked={settings.gcodeComments !== false} onChange={(checked) => handleValueChange('gcodeComments', checked)} />}
+            />
+            <SettingRow 
+                label="Line Numbers"
+                description="Prefix each G-Code line with an 'N' number (N10, N20...)."
+                control={<Switch checked={!!settings.gcodeLineNumbers} onChange={(checked) => handleValueChange('gcodeLineNumbers', checked)} />}
             />
 
             <div className="p-3 border-t border-gray-200 dark:border-gray-700 bg-blue-50/30 dark:bg-blue-900/10">

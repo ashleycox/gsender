@@ -5,7 +5,7 @@ export default class CAMAccessibility {
     static generateNarrative(features: CAMFeature[], options: CAMPathingOption[], tools: CAMTool[], settings: CAMSettings): string {
         const selectedOps = features
             .filter(f => f.selected)
-            .map(f => ({ feature: f, option: options.find(o => o.featureId === f.id) }))
+            .map(f => ({ feature: f, option: Array.isArray(options) ? options.find(o => o.featureId === f.id) : undefined }))
             .filter(op => op.option);
 
         if (selectedOps.length === 0) return "No operations selected for cutting.";
@@ -115,6 +115,7 @@ export default class CAMAccessibility {
 
     static getFeatureWarnings(feature: CAMFeature, options: CAMPathingOption[], tools: CAMTool[]): string[] {
         const warnings: string[] = [];
+        if (!Array.isArray(options)) return warnings;
         const option = options.find(o => o.featureId === feature.id);
         if (!option) return warnings;
 

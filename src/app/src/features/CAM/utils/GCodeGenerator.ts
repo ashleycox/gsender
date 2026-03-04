@@ -32,7 +32,6 @@ export default class GCodeGenerator {
         this.settings = settings;
         this.tools = tools;
 
-        // Pull real machine acceleration if provided (GRBL $120, $121, $122)
         if (machineSettings) {
             this.accelXY = Math.min(parseFloat(machineSettings['$120'] || '500'), parseFloat(machineSettings['$121'] || '500'));
             this.accelZ = parseFloat(machineSettings['$122'] || '50');
@@ -41,7 +40,6 @@ export default class GCodeGenerator {
         this.currentZ = this.settings.safeZ;
         this.zOffset = this.settings.zOrigin === 'bed' ? this.settings.stockThickness : 0;
         
-        // Calculate scale factor once
         this.scaleFactor = this.settings.scalingType === 'percentage' ? this.settings.scalePercentage / 100 : 1;
         const selectedFeatures = this.features.filter(f => f.selected);
         if (selectedFeatures.length > 0) {
@@ -64,7 +62,7 @@ export default class GCodeGenerator {
         const dist = Math.hypot(dx, dy, dz);
         if (dist > 0.001) {
             const f = feedrate > 0 ? feedrate : 3000;
-            const vMax = f / 60; // mm/s
+            const vMax = f / 60;
             const a = Math.abs(dz) > Math.abs(dx) && Math.abs(dz) > Math.abs(dy) ? this.accelZ : this.accelXY;
             const tAccel = vMax / a;
             const dAccel = 0.5 * a * tAccel * tAccel;
@@ -77,7 +75,6 @@ export default class GCodeGenerator {
     private formatLine(line: string, nx?: number, ny?: number, nz?: number, f?: number): string | null {
         let finalLine = line;
 
-        // Redundant G0 Removal
         if (finalLine.startsWith('G0') && !finalLine.includes(';') && !finalLine.includes('(')) {
             const isZ = finalLine.includes('Z'), isXY = finalLine.includes('X') || finalLine.includes('Y');
             if (isZ && !isXY && nz !== undefined && Math.abs(nz - this.lastG0Pos.z) < 0.001) return null;
@@ -89,7 +86,7 @@ export default class GCodeGenerator {
             this.lastG0Pos = { x: -Infinity, y: -Infinity, z: -Infinity };
         }
 
-        if (!this.settings.gcodeComments) {
+        if (this.settings.gcodeComments === false) {
             finalLine = finalLine.replace(/\(.*\)/g, '').replace(/;.*$/, '').trim();
         }
 
@@ -100,7 +97,11 @@ export default class GCodeGenerator {
             this.lineNumber += 10;
         }
 
-        if (nx !== undefined && ny !== undefined && nz !== undefined) this.updateTime(nx, ny, nz, f || 0);
+        const isComment = finalLine.startsWith('(') || finalLine.startsWith(';');
+        if (!isComment && nx !== undefined && ny !== undefined && nz !== undefined) {
+            this.updateTime(nx, ny, nz, f || 0);
+        }
+
         return finalLine;
     }
 
@@ -114,22 +115,21 @@ export default class GCodeGenerator {
         push('(--- gSender CAM Generated G-Code ---)');
         push(`(STOCK_BOX: W=${this.settings.stockWidth}, L=${this.settings.stockLength}, T=${this.settings.stockThickness}, Z_REF=${this.settings.zOrigin})`);
         
-        // Setup visualizer bounding box
         const vSafeZ = this.settings.safeZ + this.zOffset + 50; 
-        push(`G0 Z${vSafeZ.toFixed(3)}`, 0, 0, vSafeZ);
-        push(`G0 X0 Y0`, 0, 0, vSafeZ);
-        push(`G0 X${this.settings.stockWidth} Y0`, this.settings.stockWidth, 0, vSafeZ);
-        push(`G0 X${this.settings.stockWidth} Y${this.settings.stockLength}`, this.settings.stockWidth, this.settings.stockLength, vSafeZ);
-        push(`G0 X0 Y${this.settings.stockLength}`, 0, this.settings.stockLength, vSafeZ);
-        push(`G0 X0 Y0`, 0, 0, vSafeZ);
+        push(`(G0 Z${vSafeZ.toFixed(3)})`, 0, 0, vSafeZ);
+        push(`(G0 X0 Y0)`, 0, 0, vSafeZ);
+        push(`(G0 X${this.settings.stockWidth} Y0)`, this.settings.stockWidth, 0, vSafeZ);
+        push(`(G0 X${this.settings.stockWidth} Y${this.settings.stockLength})`, this.settings.stockWidth, this.settings.stockLength, vSafeZ);
+        push(`(G0 X0 Y${this.settings.stockLength})`, 0, this.settings.stockLength, vSafeZ);
+        push(`(G0 X0 Y0)`, 0, 0, vSafeZ);
 
         push('(ORIGIN_TRIPOD: X=Red, Y=Green, Z=Blue)');
-        push(`G0 X0 Y0 Z${this.zOffset}`, 0, 0, this.zOffset);
-        push(`G0 X10 Y0`, 10, 0, this.zOffset);
-        push(`G0 X0 Y0`, 0, 0, this.zOffset);
-        push(`G0 X0 Y10`, 0, 10, this.zOffset);
-        push(`G0 X0 Y0`, 0, 0, this.zOffset);
-        push(`G0 X0 Y0 Z${this.zOffset + 10}`, 0, 0, this.zOffset + 10);
+        push(`(G0 X0 Y0 Z${this.zOffset})`, 0, 0, this.zOffset);
+        push(`(G0 X10 Y0)`, 10, 0, this.zOffset);
+        push(`(G0 X0 Y0)`, 0, 0, this.zOffset);
+        push(`(G0 X0 Y10)`, 0, 10, this.zOffset);
+        push(`(G0 X0 Y0)`, 0, 0, this.zOffset);
+        push(`(G0 X0 Y0 Z${this.zOffset + 10})`, 0, 0, this.zOffset + 10);
         push(`G0 Z${(this.settings.safeZ + this.zOffset).toFixed(3)}`, 0, 0, this.settings.safeZ + this.zOffset);
 
         if (this.settings.startGcode) {
@@ -180,7 +180,7 @@ export default class GCodeGenerator {
         const designHeight = globalBounds.height * this.scaleFactor;
 
         const operations = selectedFeatures.map(feature => {
-            const option = this.options.find(o => o.featureId === feature.id);
+            const option = Array.isArray(this.options) ? this.options.find(o => o.featureId === feature.id) : undefined;
             const tool = option ? [...DEFAULT_TOOLS, ...this.tools].find(t => t.id === option.toolId) : undefined;
             return { feature, option, tool };
         }).filter(op => op.option && op.tool);
@@ -285,10 +285,8 @@ export default class GCodeGenerator {
                 pushLine(`M5 ; Stop Spindle`);
                 pushLine(`G0 Z${(this.settings.safeZ + this.zOffset).toFixed(3)} ; Retract to Safe Z`);
                 pushLine(`G28 Z ; Home Z-axis for tool clearance`);
-                pushLine(`G28 X Y ; Optional: Move to tool change position (Home XY)`);
                 const numericToolId = parseInt(tool.id.replace(/\D/g, '')) || 1;
                 pushLine(`T${numericToolId} M6 ; Request Tool ${numericToolId}`);
-                pushLine(`(Tool Change Complete. Returning to work area...)`);
                 pushLine(`${this.settings.spindle} S${tool.spindleRPM} ; Start Spindle`);
                 pushLine(`G4 P2.0 ; Dwell for spin-up`);
                 currentToolId = tool.id;
@@ -305,14 +303,6 @@ export default class GCodeGenerator {
                     if (orientation === 'bottom' || this.settings.millingSide === 'bottom') {
                         const bounds = this.getBounds(feature.points);
                         paths = paths.map(path => path.map(p => ({ ...p, x: bounds.maxX - (p.x - bounds.minX) })));
-                    } else if (orientation === 'left') {
-                        paths = paths.map(path => path.map(p => ({ x: -p.z || 0, y: p.y, z: p.x })));
-                    } else if (orientation === 'right') {
-                        paths = paths.map(path => path.map(p => ({ x: p.z || 0, y: p.y, z: -p.x })));
-                    } else if (orientation === 'front') {
-                        paths = paths.map(path => path.map(p => ({ x: p.x, y: p.z || 0, z: -p.y })));
-                    } else if (orientation === 'back') {
-                        paths = paths.map(path => path.map(p => ({ x: p.x, y: -p.z || 0, z: p.y })));
                     }
 
                     paths = paths.map(path => path.map(p => ({ 
@@ -402,9 +392,28 @@ export default class GCodeGenerator {
                         if (!isLaser) pushLine(`G0 Z${(this.zOffset + 1.0).toFixed(3)}`, this.currentX, this.currentY, this.zOffset + 1.0, 0);
                         const safeStepdown = Math.max(0.00001, tool.stepdown);
                         let currentPassDepth = 0;
+
+                        // Tab Logic Preparation
+                        let tabCenters: number[] = [];
+                        if (option.tabs?.enabled && option.tabs.count > 0) {
+                            let totalLen = 0;
+                            for (let i = 1; i < path.length; i++) totalLen += Math.hypot(path[i].x - path[i-1].x, path[i].y - path[i-1].y);
+                            const spacing = totalLen / option.tabs.count;
+                            let curLen = 0;
+                            for (let i = 1; i < path.length; i++) {
+                                const segLen = Math.hypot(path[i].x - path[i-1].x, path[i].y - path[i-1].y);
+                                while (curLen + segLen > tabCenters.length * spacing + (spacing/2)) {
+                                    tabCenters.push(curLen + (tabCenters.length * spacing + (spacing/2) - curLen));
+                                }
+                                curLen += segLen;
+                            }
+                        }
+
                         while (currentPassDepth < option.depth) {
                             currentPassDepth = Math.min(currentPassDepth + safeStepdown, option.depth);
                             const targetZ = this.zOffset - currentPassDepth;
+                            const isFinalPass = currentPassDepth >= option.depth - 0.001;
+
                             if (isLaser) pushLine(`M4 S${tool.spindleRPM}`);
                             else {
                                 if (path.length > 1) {
@@ -438,11 +447,45 @@ export default class GCodeGenerator {
                                     }
                                 } else pushLine(`G1 Z${targetZ.toFixed(3)} F${tool.plungeRate}`, this.currentX, this.currentY, targetZ, tool.plungeRate);
                             }
+
+                            let curDistance = 0;
                             for (let i = 1; i < path.length; i++) {
-                                const pt = path[i];
-                                pushLine(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F${tool.feedrate}`, pt.x, pt.y, this.currentZ, tool.feedrate);
+                                const p1 = path[i-1], p2 = path[i];
+                                const segLen = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+                                
+                                if (isFinalPass && option.tabs?.enabled) {
+                                    const halfTab = option.tabs.width / 2;
+                                    const tabHeightZ = targetZ + option.tabs.height;
+                                    
+                                    // Check if this segment contains any tab centers
+                                    for (const center of tabCenters) {
+                                        if (center > curDistance - halfTab && center < curDistance + segLen + halfTab) {
+                                            // Split segment if needed to include tab lift/drop
+                                            const tabStart = Math.max(0, center - halfTab - curDistance);
+                                            const tabEnd = Math.min(segLen, center + halfTab - curDistance);
+                                            
+                                            if (tabStart > 0) {
+                                                const tx = p1.x + (p2.x - p1.x) * (tabStart / segLen);
+                                                const ty = p1.y + (p2.y - p1.y) * (tabStart / segLen);
+                                                pushLine(`G1 X${tx.toFixed(3)} Y${ty.toFixed(3)} F${tool.feedrate}`, tx, ty, targetZ, tool.feedrate);
+                                            }
+                                            
+                                            const tsx = p1.x + (p2.x - p1.x) * (tabStart / segLen);
+                                            const tsy = p1.y + (p2.y - p1.y) * (tabStart / segLen);
+                                            pushLine(`G1 Z${tabHeightZ.toFixed(3)} F${tool.plungeRate} ; Tab Start`, tsx, tsy, tabHeightZ, tool.plungeRate);
+                                            
+                                            const tex = p1.x + (p2.x - p1.x) * (tabEnd / segLen);
+                                            const tey = p1.y + (p2.y - p1.y) * (tabEnd / segLen);
+                                            pushLine(`G1 X${tex.toFixed(3)} Y${tey.toFixed(3)} F${tool.feedrate}`, tex, tey, tabHeightZ, tool.feedrate);
+                                            pushLine(`G1 Z${targetZ.toFixed(3)} F${tool.plungeRate} ; Tab End`, tex, tey, targetZ, tool.plungeRate);
+                                        }
+                                    }
+                                }
+                                
+                                pushLine(`G1 X${p2.x.toFixed(3)} Y${p2.y.toFixed(3)} F${tool.feedrate}`, p2.x, p2.y, targetZ, tool.feedrate);
+                                curDistance += segLen;
                             }
-                            if (['circle', 'rectangle', 'hole'].includes(feature.type)) pushLine(`G1 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} F${tool.feedrate}`, start.x, start.y, this.currentZ, tool.feedrate);
+                            if (['circle', 'rectangle', 'hole'].includes(feature.type)) pushLine(`G1 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} F${tool.feedrate}`, start.x, start.y, targetZ, tool.feedrate);
                             if (isLaser) { pushLine(`M5`); break; }
                         }
                         const nextPath = paths[pathIdx + 1];
@@ -527,6 +570,7 @@ export default class GCodeGenerator {
 
     private generateRasterPath(points: {x: number, y: number, z?: number}[], tool: CAMTool, feature?: CAMFeature, option?: CAMPathingOption): {x: number, y: number, z?: number}[][] {
         const { rasterResolution, millingSide, threeDAlignment = 'top', threeDZOffset = 0, stockThickness, customResolutionValue } = this.settings;
+        
         if (!feature || !feature.meshVertices || feature.meshVertices.length === 0) {
             let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
             points.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
@@ -539,6 +583,7 @@ export default class GCodeGenerator {
             }
             return [path];
         }
+
         const vertices = feature.meshVertices;
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
         for (let i = 0; i < vertices.length; i += 3) {
@@ -546,13 +591,27 @@ export default class GCodeGenerator {
             if (millingSide === 'bottom') { x = -x; z = -z; }
             minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
         }
+
         let res = Math.max(0.00001, tool.metricDiameter / 10);
         if (rasterResolution === 'standard') res = 0.5;
         if (rasterResolution === 'high') res = 0.1;
         if (rasterResolution === 'custom') res = Math.max(0.05, customResolutionValue || 0.1);
+
+        // Apply boundary if selected
+        let bMinX = minX, bMaxX = maxX, bMinY = minY, bMaxY = maxY;
+        if (option?.threeDBoundaryId) {
+            const boundaryFeature = this.features.find(f => f.id === option.threeDBoundaryId);
+            if (boundaryFeature) {
+                bMinX = Infinity; bMaxX = -Infinity; bMinY = Infinity; bMaxY = -Infinity;
+                boundaryFeature.points.forEach(p => { bMinX = Math.min(bMinX, p.x); bMaxX = Math.max(bMaxX, p.x); bMinY = Math.min(bMinY, p.y); bMaxY = Math.max(bMaxY, p.y); });
+                minX = Math.max(minX, bMinX); maxX = Math.min(maxX, bMaxX); minY = Math.max(minY, bMinY); maxY = Math.min(maxY, bMaxY);
+            }
+        }
+
         const cols = Math.ceil((maxX - minX) / res) + 1, rows = Math.ceil((maxY - minY) / res) + 1;
         const zBuffer = new Float32Array(cols * rows).fill(minZ - 10);
         const getGC = (x: number, y: number) => ({ c: Math.floor((x - minX) / res), r: Math.floor((y - minY) / res) });
+
         for (let i = 0; i < vertices.length; i += 9) {
             let v0x = vertices[i], v0y = vertices[i+1], v0z = vertices[i+2], v1x = vertices[i+3], v1y = vertices[i+4], v1z = vertices[i+5], v2x = vertices[i+6], v2y = vertices[i+7], v2z = vertices[i+8];
             if (millingSide === 'bottom') { v0x = -v0x; v0z = -v0z; v1x = -v1x; v1z = -v1z; v2x = -v2x; v2z = -v2z; }
@@ -568,6 +627,7 @@ export default class GCodeGenerator {
                 }
             }
         }
+
         const comp = new Float32Array(zBuffer.length);
         const tR = tool.metricDiameter / 2, tRC = Math.ceil(tR / res), kernel = [];
         for (let dr = -tRC; dr <= tRC; dr++) {
@@ -594,26 +654,58 @@ export default class GCodeGenerator {
                 comp[r * cols + c] = maxZ_val;
             }
         }
+
+        // 3D Holding Tabs
+        if (option?.threeDTabs?.enabled) {
+            const tw = option.threeDTabs.width, th = option.threeDTabs.height;
+            const mx = (maxX + minX) / 2, my = (maxY + minY) / 2;
+            const positions = [{ x: minX, y: my }, { x: maxX, y: my }, { x: mx, y: minY }, { x: mx, y: maxY }];
+            positions.forEach(pos => {
+                const sR = Math.max(0, getGC(pos.x - tw, pos.y - tw).r), eR = Math.min(rows - 1, getGC(pos.x + tw, pos.y + tw).r);
+                const sC = Math.max(0, getGC(pos.x - tw, pos.y - tw).c), eC = Math.min(cols - 1, getGC(pos.x + tw, pos.y + tw).c);
+                for (let r = sR; r <= eR; r++) {
+                    for (let c = sC; c <= eC; c++) {
+                        const idx = r * cols + c;
+                        const tabZ = minZ + th;
+                        if (comp[idx] < tabZ) comp[idx] = tabZ;
+                    }
+                }
+            });
+        }
+
         const modelHeight = maxZ - minZ;
         let alignmentOffsetZ = 0;
         if (threeDAlignment === 'top') alignmentOffsetZ = -maxZ;
         else if (threeDAlignment === 'center') alignmentOffsetZ = -maxZ + (modelHeight / 2) - (stockThickness / 2);
         else if (threeDAlignment === 'bottom') alignmentOffsetZ = -minZ - stockThickness;
         alignmentOffsetZ -= threeDZOffset;
-        const step = Math.max(res, tool.metricDiameter * (tool.stepover / 100));
-        const path = []; let py = minY, goingRight = true;
-        while (py <= maxY) {
-            const lp = []; let px = minX;
-            while (px <= maxX) {
-                const r = Math.min(rows - 1, Math.max(0, Math.floor((py - minY) / res))), c = Math.min(cols - 1, Math.max(0, Math.floor((px - minX) / res)));
-                const rawZ = comp[r * cols + c];
-                lp.push({ x: px, y: py, z: (rawZ <= minZ - 9 ? minZ : rawZ) + alignmentOffsetZ });
-                px += res;
+
+        const strategy = option?.threeDStrategy || 'raster-x';
+        const finalPaths = [];
+
+        const generateRaster = (isY: boolean) => {
+            const step = Math.max(res, tool.metricDiameter * (tool.stepover / 100));
+            const path = []; let primary = isY ? minX : minY, maxPrimary = isY ? maxX : maxY, goingRight = true;
+            while (primary <= maxPrimary) {
+                const lp = []; let secondary = isY ? minY : minX, maxSecondary = isY ? maxY : maxX;
+                while (secondary <= maxSecondary) {
+                    const cx = isY ? primary : secondary, cy = isY ? secondary : primary;
+                    const r = Math.min(rows - 1, Math.max(0, Math.floor((cy - minY) / res))), c = Math.min(cols - 1, Math.max(0, Math.floor((cx - minX) / res)));
+                    const rawZ = comp[r * cols + c];
+                    lp.push({ x: cx, y: cy, z: (rawZ <= minZ - 9 ? minZ : rawZ) + alignmentOffsetZ });
+                    secondary += res;
+                }
+                if (lp.length > 0) { if (!goingRight) lp.reverse(); path.push(...lp); }
+                goingRight = !goingRight; primary += step;
             }
-            if (lp.length > 0) { if (!goingRight) lp.reverse(); path.push(...lp); }
-            goingRight = !goingRight; py += step;
-        }
-        return [path];
+            return path;
+        };
+
+        if (strategy === 'raster-x') finalPaths.push(generateRaster(false));
+        else if (strategy === 'raster-y') finalPaths.push(generateRaster(true));
+        else if (strategy === 'cross-hatch') { finalPaths.push(generateRaster(false)); finalPaths.push(generateRaster(true)); }
+
+        return finalPaths;
     }
 
     private offsetPath(pts: {x: number, y: number, z?: number}[], dist: number) {

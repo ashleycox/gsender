@@ -3,6 +3,9 @@ import { CAMFeature, CAMSettings, CAMPathingOption, CAMTool } from '../definitio
 
 export default class NestingEngine {
     static optimize(features: CAMFeature[], settings: CAMSettings, options: CAMPathingOption[], tools: CAMTool[]): CAMFeature[] {
+        if (!features || features.length === 0) return [];
+        if (!Array.isArray(options)) return features;
+        
         const userSpacing = settings.nestingSpacing || 5;
         
         // Find the largest tool diameter used in the current operations

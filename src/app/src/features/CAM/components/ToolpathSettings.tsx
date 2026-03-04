@@ -34,7 +34,7 @@ const DEFAULT_TOOLS: CAMTool[] = [
 
 const ToolpathSettings = ({ features }: ToolpathSettingsProps) => {
     const dispatch = useDispatch();
-    const { options, tools, settings } = useTypedSelector(state => state.cam);
+    const { pathingOptions: options, tools, settings } = useTypedSelector(state => state.cam);
     const allTools = [...DEFAULT_TOOLS, ...tools];
 
     const boundsMap = React.useMemo(() => {
@@ -50,7 +50,8 @@ const ToolpathSettings = ({ features }: ToolpathSettingsProps) => {
 
     const getOptionForFeature = (featureId: string) => {
         const feature = features.find(f => f.id === featureId);
-        return options.find(o => o.featureId === featureId) || {
+        const existing = Array.isArray(options) ? options.find(o => o.featureId === featureId) : undefined;
+        return existing || {
             id: uuid(),
             featureId,
             type: feature?.isFace ? 'pocket' : feature?.isEdge ? 'on-line' : 'outside',
@@ -62,7 +63,7 @@ const ToolpathSettings = ({ features }: ToolpathSettingsProps) => {
     };
 
     const handleOptionChange = (featureId: string, updates: any) => {
-        const existing = options.find(o => o.featureId === featureId) || getOptionForFeature(featureId);
+        const existing = (Array.isArray(options) ? options.find(o => o.featureId === featureId) : undefined) || getOptionForFeature(featureId);
         
         const deepMerge = (target: any, source: any) => {
             const output = { ...target };

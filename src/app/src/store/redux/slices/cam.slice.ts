@@ -39,6 +39,8 @@ const initialState: CAMState = {
         nestingSpacing: 5,
         startGcode: '',
         endGcode: '',
+        gcodeComments: true,
+        gcodeLineNumbers: false,
         showSafetyChecklist: true
     },
     tools: [],

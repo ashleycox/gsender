@@ -190,7 +190,7 @@ const CAM = () => {
         const printWindow = window.open('', '_blank');
         if (!printWindow) return;
         
-        const selectedOps = features.filter(f => f.selected).map(f => ({ feature: f, option: pathingOptions.find(o => o.featureId === f.id) })).filter(op => op.option);
+        const selectedOps = features.filter(f => f.selected).map(f => ({ feature: f, option: Array.isArray(pathingOptions) ? pathingOptions.find(o => o.featureId === f.id) : undefined })).filter(op => op.option);
         const usedToolIds = Array.from(new Set(selectedOps.map(op => op.option!.toolId)));
         const usedTools = usedToolIds.map(id => tools.find(t => t.id === id)).filter(Boolean);
 
@@ -350,17 +350,13 @@ const CAM = () => {
     };
 
     const handleGenerateRequest = () => {
-        if (settings.showSafetyChecklist !== false && !settings.skipChecklistForever) {
-            setShowChecklistModal(true);
-        } else {
-            handleGenerateGcode();
-        }
+        handleGenerateGcode();
     };
 
     const handleFeatureMove = (id: string, dx: number, dy: number) => {
         const selectedIds = features.filter(f => f.selected && !f.parentId).map(f => f.id);
         const targets = selectedIds.includes(id) ? selectedIds : [id];
-        
+
         const nextFeatures = features.map(f => {
             if (targets.includes(f.id) || (f.parentId && targets.includes(f.parentId))) {
                 return {
@@ -393,7 +389,7 @@ const CAM = () => {
             updateSettings({ ...settings, skipChecklistForever: true });
         }
         setShowChecklistModal(false);
-        handleGenerateGcode();
+        handleLoadToSender();
     };
 
     const handleGenerateGcode = () => {
@@ -488,12 +484,16 @@ const CAM = () => {
     };
 
     const handleLoadToSender = () => {
+        if (settings.showSafetyChecklist !== false && !settings.skipChecklistForever && !showChecklistModal) {
+            setShowChecklistModal(true);
+            return;
+        }
+
         const name = 'gsender_cam.gcode';
-        pubsub.publish('gcode:surfacing', { gcode, name, size: new File([gcode], name).size }); 
+        pubsub.publish('gcode:surfacing', { gcode, name, size: new File([gcode], name).size });
         CAMAccessibility.announce("G-Code loaded.");
         navigate('/');
     };
-
     const handleReset = () => {
         if (features.length === 0 || window.confirm("Are you sure you want to reset the current CAM session? All unsaved changes will be lost.")) {
             dispatch(camActions.resetCAM());
@@ -562,7 +562,7 @@ const CAM = () => {
                 tabs: { enabled: false, count: 4, width: 5, height: 2 }
             };
         });
-        const updatedOptions = [...pathingOptions, ...newOptions];
+        const updatedOptions = [...(pathingOptions || []), ...newOptions];
         dispatch(camActions.setPathingOptions(updatedOptions));
         pushToHistory();
         CAMAccessibility.announce(`Added ${generatedFeatures.length} features from wizard.`);
