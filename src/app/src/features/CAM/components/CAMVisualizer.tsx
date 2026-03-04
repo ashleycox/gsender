@@ -164,11 +164,33 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
 
     const colors = getThemeColors();
 
-    const isOutOfBounds = wpos.x < 0 || wpos.x > settings.stockWidth || wpos.y < 0 || wpos.y > settings.stockLength;
+    const isDesignOutOfBounds = useMemo(() => {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        const activeFeatures = features.filter(f => f.selected);
+        if (activeFeatures.length === 0) return false;
+
+        activeFeatures.forEach(f => {
+            f.points.forEach(p => {
+                minX = Math.min(minX, p.x);
+                maxX = Math.max(maxX, p.x);
+                minY = Math.min(minY, p.y);
+                maxY = Math.max(maxY, p.y);
+            });
+        });
+
+        return minX < 0 || maxX > settings.stockWidth || minY < 0 || maxY > settings.stockLength;
+    }, [features, settings.stockWidth, settings.stockLength]);
+
+    const isSpindleOutOfBounds = wpos.x < 0 || wpos.x > settings.stockWidth || wpos.y < 0 || wpos.y > settings.stockLength;
 
     return (
         <div 
-            className={cx("w-full h-full min-h-[400px] relative border rounded-md overflow-hidden bg-black", `theme-${settings.visualTheme || 'default'}`, isMoveMode && "cursor-move")} 
+            className={cx(
+                "w-full h-full min-h-[400px] relative border-2 rounded-md overflow-hidden bg-black transition-colors duration-300", 
+                `theme-${settings.visualTheme || 'default'}`, 
+                isMoveMode && "cursor-move",
+                (isDesignOutOfBounds || isSpindleOutOfBounds) ? "border-red-600/50 shadow-[0_0_15px_rgba(220,38,38,0.2)]" : "border-gray-800"
+            )} 
             id={SURFACING_VISUALIZER_CONTAINER_ID}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
@@ -218,13 +240,19 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                 <div className="bg-black/50 px-2 py-1 rounded text-[10px] text-gray-400 border border-gray-700 uppercase tracking-wider font-bold">
                     {settings.millingSide} Side | {settings.zOrigin} Origin
                 </div>
+
+                {isDesignOutOfBounds && (
+                    <div className="bg-red-600 px-2 py-1 rounded text-[10px] text-white flex items-center gap-1 animate-pulse font-bold border border-red-400 shadow-lg">
+                        <AlertTriangle size={12} /> Design Out of Bounds
+                    </div>
+                )}
             </div>
 
             {setupAssistant && isConnected && (
                 <div className="absolute top-12 left-2 z-10 bg-black/80 backdrop-blur-md p-3 rounded-lg border border-gray-700 text-xs w-64 shadow-xl animate-in slide-in-from-top-2">
                     <h4 className="font-bold text-white border-b border-gray-700 pb-1 mb-2 flex items-center justify-between">
                         Live Setup Assistant
-                        {isOutOfBounds && <AlertTriangle size={14} className="text-amber-500 animate-pulse" />}
+                        {isSpindleOutOfBounds && <AlertTriangle size={14} className="text-amber-500 animate-pulse" />}
                     </h4>
                     
                     <div className="grid grid-cols-2 gap-y-1 text-gray-300 mb-3 px-1">
@@ -286,7 +314,7 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                         </div>
                     </div>
 
-                    {isOutOfBounds ? (
+                    {isSpindleOutOfBounds ? (
                         <div className="text-[10px] text-amber-500 bg-amber-500/10 p-1.5 rounded leading-tight flex gap-2 items-start">
                             <AlertTriangle size={12} className="shrink-0 mt-0.5" />
                             <span>Warning: Spindle is outside stock bounds. Check clamp clearance!</span>

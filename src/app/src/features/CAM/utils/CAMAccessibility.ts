@@ -87,8 +87,6 @@ export default class CAMAccessibility {
     static checkFit(feature: CAMFeature, option: CAMPathingOption, tool: CAMTool): string | null {
         if (!feature.points || feature.points.length === 0) return null;
         if (option.type === 'inside' || option.type === 'pocket') {
-            // Check if tool is larger than the narrowest part of the feature
-            // Very simplified: just check bounding box width/height
             let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
             feature.points.forEach((p: {x: number, y: number, z?: number}) => {
                 minX = Math.min(minX, p.x);
@@ -99,12 +97,40 @@ export default class CAMAccessibility {
             
             const featureWidth = maxX - minX;
             const featureHeight = maxY - minY;
-            const toolDiameter = tool.metricDiameter; // Assuming metric for check
+            const toolDiameter = tool.metricDiameter;
 
             if (toolDiameter > featureWidth || toolDiameter > featureHeight) {
-                return `WARNING: ${tool.name} (${toolDiameter}mm) is too wide to fit inside ${feature.name}.`;
+                return `Tool too wide for ${feature.name}`;
             }
         }
         return null;
+    }
+
+    static checkDepth(feature: CAMFeature, option: CAMPathingOption, tool: CAMTool): string | null {
+        if (option.depth > tool.toolLength) {
+            return `Depth (${option.depth}) exceeds tool length (${tool.toolLength})`;
+        }
+        return null;
+    }
+
+    static getFeatureWarnings(feature: CAMFeature, options: CAMPathingOption[], tools: CAMTool[]): string[] {
+        const warnings: string[] = [];
+        const option = options.find(o => o.featureId === feature.id);
+        if (!option) return warnings;
+
+        const tool = tools.find(t => t.id === option.toolId);
+        if (!tool) return warnings;
+
+        const fitError = this.checkFit(feature, option, tool);
+        if (fitError) warnings.push(fitError);
+
+        const depthError = this.checkDepth(feature, option, tool);
+        if (depthError) warnings.push(depthError);
+
+        if ((option.type === 'inside' || option.type === 'pocket') && !option.tabs?.enabled) {
+            warnings.push("No tabs on cutout - part may fly loose");
+        }
+
+        return warnings;
     }
 }

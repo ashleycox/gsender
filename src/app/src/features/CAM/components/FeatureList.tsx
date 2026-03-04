@@ -1,20 +1,24 @@
 import React, { useState } from 'react';
 import { Checkbox } from '../../../components/Checkbox';
 import { Button } from '../../../components/Button';
-import { CAMFeature, CAMSettings } from '../definitions';
+import { CAMFeature, CAMSettings, CAMPathingOption, CAMTool } from '../definitions';
+import Tooltip from '../../../components/Tooltip';
 import CAMAccessibility from '../utils/CAMAccessibility';
 import cx from 'classnames';
-import { ChevronDown, ChevronRight, CornerDownRight, ArrowUp, ArrowDown } from 'lucide-react';
+import { ChevronDown, ChevronRight, CornerDownRight, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
 
 interface FeatureListProps {
     features: CAMFeature[];
     onToggleFeature: (id: string) => void;
+    onBulkToggle?: (ids: string[], selected: boolean) => void;
     onReorder: (id: string, direction: 'up' | 'down') => void;
     settings: CAMSettings;
+    options: CAMPathingOption[];
+    tools: CAMTool[];
     focusedIdx?: number;
 }
 
-const FeatureList = ({ features, onToggleFeature, onReorder, settings, focusedIdx = -1 }: FeatureListProps) => {
+const FeatureList = ({ features, onToggleFeature, onBulkToggle, onReorder, settings, options, tools, focusedIdx = -1 }: FeatureListProps) => {
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
     if (features.length === 0) {
@@ -25,11 +29,25 @@ const FeatureList = ({ features, onToggleFeature, onReorder, settings, focusedId
         setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
     };
 
+    const handleSelectAll = () => {
+        if (onBulkToggle) {
+            onBulkToggle(features.map(f => f.id), true);
+        }
+    };
+
+    const handleClearAll = () => {
+        if (onBulkToggle) {
+            onBulkToggle(features.map(f => f.id), false);
+        }
+    };
+
     const renderFeature = (feature: CAMFeature, depth: number = 0) => {
         const isExpanded = expanded[feature.id] !== false; // Default expanded
         const hasChildren = feature.children && feature.children.length > 0;
         const childFeatures = hasChildren ? features.filter(f => feature.children!.includes(f.id)) : [];
         const isFocused = features.findIndex(f => f.id === feature.id) === focusedIdx;
+
+        const warnings = feature.selected ? CAMAccessibility.getFeatureWarnings(feature, options, tools) : [];
 
         return (
             <React.Fragment key={feature.id}>
@@ -71,6 +89,18 @@ const FeatureList = ({ features, onToggleFeature, onReorder, settings, focusedId
                         <span className="text-[10px] text-gray-400 uppercase bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded shrink-0">
                             {feature.type}
                         </span>
+                        {warnings.length > 0 && (
+                            <Tooltip content={(
+                                <div className="flex flex-col gap-1 p-1 max-w-xs">
+                                    <span className="font-bold text-red-400">Warnings Found:</span>
+                                    {warnings.map((w, i) => <span key={i} className="text-[11px]">• {w}</span>)}
+                                </div>
+                            ) as any}>
+                                <div className="text-amber-500 shrink-0 cursor-help animate-pulse">
+                                    <AlertTriangle size={14} />
+                                </div>
+                            </Tooltip>
+                        )}
                         <span className="sr-only">. {CAMAccessibility.getFeatureAudit(feature, settings)}</span>
                     </label>
 
@@ -89,9 +119,16 @@ const FeatureList = ({ features, onToggleFeature, onReorder, settings, focusedId
     const rootFeatures = [...features].filter(f => !f.parentId).sort((a, b) => (a.order || 0) - (b.order || 0));
 
     return (
-        <ul className="flex flex-col list-none p-0 border rounded-md overflow-hidden" role="list">
-            {rootFeatures.map((feature) => renderFeature(feature, 0))}
-        </ul>
+        <div className="flex flex-col gap-2">
+            <div className="flex gap-2 p-1 bg-gray-100 dark:bg-dark-darker rounded-md">
+                <Button size="xs" variant="ghost" className="flex-1 h-7 text-[10px] uppercase font-bold" onClick={handleSelectAll}>Select All</Button>
+                <div className="w-px bg-gray-300 dark:bg-gray-700 h-4 self-center" />
+                <Button size="xs" variant="ghost" className="flex-1 h-7 text-[10px] uppercase font-bold" onClick={handleClearAll}>Clear All</Button>
+            </div>
+            <ul className="flex flex-col list-none p-0 border rounded-md overflow-hidden" role="list">
+                {rootFeatures.map((feature) => renderFeature(feature, 0))}
+            </ul>
+        </div>
     );
 };
 

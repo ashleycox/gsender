@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import pubsub from 'pubsub-js';
 import cx from 'classnames';
+import { cloneDeep } from 'lodash';
+import uuid from 'uuid/v4';
 import { Button } from '../../components/Button';
 import Tabs from '../../components/Tabs';
 import { uploadGcodeFileToServer } from '../../lib/fileupload';
@@ -22,7 +24,7 @@ import CAMAccessibility from './utils/CAMAccessibility';
 import { saveAsDialog } from '../../lib/file-save';
 import useKeybinding from '../../lib/useKeybinding';
 import { toast } from '../../lib/toaster';
-import { FolderOpen, Save, AlertTriangle, RefreshCcw, Undo2, Redo2, MessageSquareText, FileText, Wand2, HelpCircle } from 'lucide-react';
+import { FolderOpen, Save, AlertTriangle, RefreshCcw, Undo2, Redo2, MessageSquareText, FileText, Wand2, HelpCircle, Keyboard, Clock } from 'lucide-react';
 import SafetyChecklist from './components/SafetyChecklist';
 import ParametricWizards from './components/ParametricWizards';
 import NestingEngine from './utils/NestingEngine';
@@ -40,6 +42,8 @@ const CAM = () => {
     const [showEditor, setShowEditor] = useState(false);
     const [showWizards, setShowWizards] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
+    const [showShortcuts, setShowShortcuts] = useState(false);
+    const [estimatedTime, setEstimatedTime] = useState<number | null>(null);
     const projectInputRef = useRef<HTMLInputElement>(null);
     
     const featurePanelRef = useRef<HTMLElement>(null);
@@ -83,11 +87,13 @@ const CAM = () => {
     const pushToHistory = (opts: CAMPathingOption[], sett: CAMSettings, feats: CAMFeature[]) => {
         const newHistory = history.slice(0, historyIdx + 1);
         newHistory.push({ 
-            options: JSON.parse(JSON.stringify(opts)), 
-            settings: JSON.parse(JSON.stringify(sett)),
-            features: JSON.parse(JSON.stringify(feats))
+            options: cloneDeep(opts), 
+            settings: cloneDeep(sett),
+            features: cloneDeep(feats)
         });
-        if (newHistory.length > 50) newHistory.shift();
+        if (newHistory.length > 50) {
+            newHistory.shift();
+        }
         setHistory(newHistory);
         setHistoryIdx(newHistory.length - 1);
     };
@@ -426,12 +432,24 @@ const CAM = () => {
         pushToHistory(pathingOptions, settings, features);
     };
 
+    const handleBulkToggle = (ids: string[], selected: boolean) => {
+        const next = features.map(f => ids.includes(f.id) ? { ...f, selected } : f);
+        setFeatures(next);
+        pushToHistory(pathingOptions, settings, next);
+    };
+
     const handleConfirmSafety = (skipForever: boolean) => {
         if (skipForever) {
             updateSettings({ ...settings, skipChecklistForever: true });
         }
         setShowChecklistModal(false);
         handleGenerateGcode();
+    };
+
+    const handleBulkToggle = (ids: string[], selected: boolean) => {
+        const next = features.map(f => ids.includes(f.id) ? { ...f, selected } : f);
+        setFeatures(next);
+        pushToHistory(pathingOptions, settings, next);
     };
 
     const handleGenerateGcode = () => {
@@ -449,12 +467,14 @@ const CAM = () => {
         }
 
         setIsGenerating(true);
+        setEstimatedTime(null);
         CAMAccessibility.announce("Generating G-Code...");
         const worker = new Worker(new URL('../../workers/cam-generator.worker.ts', import.meta.url), { type: 'module' });
         worker.onmessage = (e) => {
             if (e.data.success) {
                 setGcode(e.data.gcode);
                 setOriginalGcode(e.data.gcode);
+                setEstimatedTime(e.data.estimatedTime);
                 const file = new File([e.data.gcode], 'gsender_cam.gcode');
                 uploadGcodeFileToServer(file, controller.port, VISUALIZER_SECONDARY);
                 CAMAccessibility.announce(`G-Code generated. Estimated time: ${Math.ceil(e.data.estimatedTime)} minutes.`);
@@ -593,7 +613,7 @@ const CAM = () => {
                 return fb.minX > ob.minX && fb.maxX < ob.maxX && fb.minY > ob.minY && fb.maxY < ob.maxY;
             });
             return {
-                id: Math.random().toString(36).substr(2, 9),
+                id: uuid(),
                 featureId: f.id,
                 type: isContained ? 'inside' : 'outside',
                 depth: settings.stockThickness,
@@ -625,6 +645,37 @@ const CAM = () => {
             {showChecklistModal && <SafetyChecklist onConfirm={handleConfirmSafety} onCancel={() => setShowChecklistModal(false)} />}
             {showWizards && <ParametricWizards features={features} settings={settings} onGenerate={handleWizardGenerate} onClose={() => setShowWizards(false)} />}
             
+            {showShortcuts && (
+                <div className="fixed inset-0 z-[200] bg-black/70 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setShowShortcuts(false)}>
+                    <div className="bg-white dark:bg-dark border rounded-xl shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+                        <div className="flex justify-between items-center mb-6 border-b pb-4">
+                            <h3 className="text-xl font-bold flex items-center gap-3"><Keyboard className="text-blue-500" /> CAM Keyboard Shortcuts</h3>
+                            <Button variant="ghost" size="mini" onClick={() => setShowShortcuts(false)}>Close</Button>
+                        </div>
+                        <div className="space-y-4">
+                            {[
+                                { keys: 'Alt + G', label: 'Generate G-Code' },
+                                { keys: 'Alt + L', label: 'Load to Workspace' },
+                                { keys: 'Alt + R', label: 'Reset Session' },
+                                { keys: 'Ctrl + Z', label: 'Undo Action' },
+                                { keys: 'Ctrl + Y', label: 'Redo Action' },
+                                { keys: 'Ctrl + 1', label: 'Focus Feature List' },
+                                { keys: 'Ctrl + 2', label: 'Focus Visualizer' },
+                                { keys: 'Ctrl + 3', label: 'Focus Settings' },
+                                { keys: 'Space', label: 'Toggle Feature Selection' },
+                                { keys: 'Arrows', label: 'Navigate Feature List' }
+                            ].map(sh => (
+                                <div key={sh.keys} className="flex justify-between items-center p-2 rounded hover:bg-gray-50 dark:hover:bg-gray-800">
+                                    <span className="text-sm font-medium">{sh.label}</span>
+                                    <kbd className="px-2 py-1 bg-gray-100 dark:bg-gray-700 border rounded font-mono text-xs shadow-sm">{sh.keys}</kbd>
+                                </div>
+                            ))}
+                        </div>
+                        <p className="mt-8 text-xs text-gray-500 italic text-center italic">These shortcuts are specific to the CAM workspace.</p>
+                    </div>
+                </div>
+            )}
+
             <header className="flex flex-col border-b bg-gray-50/50 dark:bg-dark-light">
                 <div className="flex justify-between items-center p-2">
                     <div className="flex items-center gap-4">
@@ -762,6 +813,18 @@ const CAM = () => {
                         <div className="h-8 w-px bg-gray-300 dark:bg-gray-700 mx-2 self-center" />
                         <div className="flex flex-col items-center">
                             <Button 
+                                onClick={() => setShowShortcuts(true)} 
+                                size="sm" 
+                                variant="ghost"
+                                className="h-9 w-9 p-0"
+                                tooltip={{ content: "View keyboard shortcut map for CAM." }}
+                            >
+                                <Keyboard size={18} />
+                            </Button>
+                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Shortcuts</span>}
+                        </div>
+                        <div className="flex flex-col items-center">
+                            <Button 
                                 onClick={() => setShowHelp(!showHelp)} 
                                 size="sm" 
                                 variant={showHelp ? "primary" : "ghost"}
@@ -787,8 +850,11 @@ const CAM = () => {
                     <FeatureList 
                         features={features} 
                         onToggleFeature={(id) => setFeatures(features.map(f => f.id === id ? { ...f, selected: !f.selected } : f))} 
+                        onBulkToggle={handleBulkToggle}
                         onReorder={handleReorder}
                         settings={settings}
+                        options={pathingOptions}
+                        tools={tools}
                         focusedIdx={focusedFeatureIdx}
                     />
                 </aside>
@@ -850,12 +916,27 @@ const CAM = () => {
                 </aside>
             </div>
 
-            <footer className="flex justify-end gap-4 p-2 border-t bg-gray-50/50 dark:bg-dark-light">
-                <Button onClick={handleGenerateRequest} disabled={features.filter(f => f.selected).length === 0 || isGenerating}>
-                    {isGenerating ? 'Generating...' : 'Generate G-Code (Alt+G)'}
-                </Button>
-                <Button onClick={handleSaveToFile} disabled={!gcode || isGenerating} variant="outline">Save G-Code</Button>
-                <Button onClick={handleLoadToSender} disabled={!gcode || isGenerating}>Load to Workspace (Alt+L)</Button>
+            <footer className="flex justify-between items-center p-2 border-t bg-gray-50/50 dark:bg-dark-light">
+                <div className="flex items-center gap-6 px-4">
+                    {estimatedTime !== null && (
+                        <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 animate-in fade-in slide-in-from-left-2">
+                            <Clock size={16} />
+                            <span className="text-sm font-bold">Estimated Job Duration: <span className="font-mono">{Math.ceil(estimatedTime)} min</span></span>
+                        </div>
+                    )}
+                    {features.filter(f => f.selected).length > 0 && (
+                        <div className="text-[11px] text-gray-500 uppercase font-bold tracking-tight">
+                            {features.filter(f => f.selected).length} Operations Selected
+                        </div>
+                    )}
+                </div>
+                <div className="flex gap-4">
+                    <Button onClick={handleGenerateRequest} disabled={features.filter(f => f.selected).length === 0 || isGenerating}>
+                        {isGenerating ? 'Generating...' : 'Generate G-Code (Alt+G)'}
+                    </Button>
+                    <Button onClick={handleSaveToFile} disabled={!gcode || isGenerating} variant="outline">Save G-Code</Button>
+                    <Button onClick={handleLoadToSender} disabled={!gcode || isGenerating}>Load to Workspace (Alt+L)</Button>
+                </div>
             </footer>
         </div>
     );

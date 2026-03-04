@@ -37,7 +37,6 @@ export default class NestingEngine {
         });
 
         // Potpack optimizes the layout in-place
-        // @ts-ignore
         const { w, h } = potpack(boxes);
 
         const getRootId = (featureId: string): string => {
@@ -49,12 +48,10 @@ export default class NestingEngine {
         // Map the new positions back to the features
         return features.map(f => {
             const rootId = getRootId(f.id);
-            const box = boxes.find(b => b.id === rootId);
+            const box = boxes.find(b => b.id === rootId) as any;
             if (!box) return f;
 
-            // @ts-ignore
             const offsetX = box.x - box.minX;
-            // @ts-ignore
             const offsetY = box.y - box.minY;
 
             return {
