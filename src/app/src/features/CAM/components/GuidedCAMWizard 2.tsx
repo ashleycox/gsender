@@ -55,13 +55,13 @@ const GuidedCAMWizard = ({
         {
             title: "2. Set Stock Dimensions",
             description: "Define the size and thickness of your material.",
-            content: <GlobalSettings />,
+            content: <GlobalSettings settings={settings} onChange={onSettingsChange} />,
             canContinue: settings.stockWidth > 0 && settings.stockLength > 0
         },
         {
             title: "3. Select Features",
             description: "Choose which parts of the design you want to cut.",
-            content: <FeatureList features={features} onToggleFeature={onToggleFeature} onReorder={() => {}} settings={settings} options={pathingOptions} tools={tools} />,
+            content: <FeatureList features={features} onToggleFeature={onToggleFeature} onReorder={() => {}} settings={settings} />,
             canContinue: features.filter(f => f.selected).length > 0
         },
         {
@@ -70,6 +70,10 @@ const GuidedCAMWizard = ({
             content: (
                 <ToolpathSettings 
                     features={features.filter(f => f.selected)}
+                    options={pathingOptions}
+                    tools={tools}
+                    onChange={onPathingChange}
+                    settings={settings}
                 />
             ),
             canContinue: true

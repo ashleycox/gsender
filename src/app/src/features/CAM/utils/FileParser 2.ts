@@ -1,7 +1,7 @@
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader';
-import { v4 as uuid } from 'uuid';
 import { CAMFeature } from '../definitions';
+// @ts-ignore
 import ImageTracer from 'imagetracerjs';
 
 export default class FileParser {
@@ -18,19 +18,23 @@ export default class FileParser {
 
         svgData.paths.forEach((path, index) => {
             path.subPaths.forEach((subPath, subIndex) => {
+                // Determine resolution based on subPath length and tolerance
+                // SVGLoader doesn't give us a direct way to use chordal error easily, 
+                // but we can estimate the number of points.
                 const points = subPath.getPoints(Math.max(12, Math.min(2000, 100 / tolerance)));
                 const color = path.userData?.style?.stroke || path.userData?.style?.fill || '#ffffff';
                 if (points.length > 1) {
-                    const mappedPoints = points.map((p: any) => ({ x: p.x, y: p.y }));
+                    const mappedPoints = points.map((p: any) => ({ x: p.x, y: p.y })); // Removed negation here, we'll handle coordinate space in the SVG generation
                     
+                    // Simple check if it's a rectangle
                     let type: 'path' | 'rectangle' | 'circle' = 'path';
                     if (subPath.curves.length === 4 && subPath.autoClose) {
                         type = 'rectangle';
                     }
 
                     features.push({
-                        id: uuid(),
-                        name: `SVG Path ${index + 1}-${subIndex + 1}`,
+                        id: `svg-path-${Math.random().toString(36).substr(2,9)}`,
+                        name: `Part ${index + 1}-${subIndex + 1}`,
                         type: type,
                         color: color,
                         points: mappedPoints,
@@ -60,53 +64,48 @@ export default class FileParser {
     static async parseDXF(file: File, settings?: any): Promise<CAMFeature[]> {
         const text = await file.text();
         const features: CAMFeature[] = [];
-        const lines = text.split(/\r?\n/).map(l => l.trim());
+        const lines = text.split(/\r?\n/);
         let inEntities = false;
         const tolerance = settings?.curveTolerance || 0.01;
 
         for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
+            const line = lines[i].trim();
             if (line === 'ENTITIES') inEntities = true;
             if (line === 'ENDSEC') inEntities = false;
 
             if (inEntities && line === '0') {
-                const entityType = lines[i + 1];
-                if (['LINE', 'CIRCLE', 'LWPOLYLINE'].includes(entityType)) {
+                const type = lines[i+1]?.trim();
+                if (type === 'LINE' || type === 'CIRCLE' || type === 'LWPOLYLINE') {
                     const feature: CAMFeature = {
-                        id: uuid(),
-                        name: `${entityType} ${features.length + 1}`,
-                        type: entityType === 'CIRCLE' ? 'circle' : 'path',
+                        id: `dxf-${features.length}`,
+                        name: `${type} ${features.length + 1}`,
+                        type: type === 'CIRCLE' ? 'circle' : 'path',
                         points: [],
                         selected: true
                     };
 
-                    let j = i + 2;
+                    let j = i + 1;
                     let radius = 0;
-                    let currentPoint: { x?: number, y?: number } = {};
-
-                    while (j < lines.length && lines[j] !== '0') {
-                        const code = lines[j];
-                        const val = parseFloat(lines[j + 1]);
-
-                        if (code === '10' || code === '11') currentPoint.x = val;
-                        if (code === '20' || code === '21') {
-                            currentPoint.y = val;
-                            if (currentPoint.x !== undefined) {
-                                feature.points.push({ x: currentPoint.x, y: currentPoint.y });
-                                currentPoint = {};
-                            }
-                        }
-                        if (code === '40') radius = val;
-                        j += 2;
+                    while (j < lines.length && lines[j].trim() !== '0') {
+                        const code = lines[j].trim();
+                        if (code === '10') feature.points.push({ x: parseFloat(lines[j+1]), y: 0 });
+                        if (code === '20' && feature.points.length > 0) feature.points[feature.points.length-1].y = parseFloat(lines[j+1]);
+                        if (code === '40') radius = parseFloat(lines[j+1]);
+                        j++;
                     }
                     
-                    if (entityType === 'CIRCLE' && feature.points.length === 1 && radius > 0) {
+                    if (type === 'CIRCLE' && feature.points.length === 1 && radius > 0) {
                         const cx = feature.points[0].x, cy = feature.points[0].y;
                         const cPts = [];
-                        let steps = 36;
+                        
+                        // Adaptive resolution: n = pi / arccos(1 - tolerance/radius)
+                        // This ensures the error never exceeds the tolerance.
+                        let steps = 36; // Minimum 36 segments
                         if (radius > tolerance) {
                             steps = Math.ceil(Math.PI / Math.acos(1 - (tolerance / radius)));
                         }
+                        
+                        // Clamp steps between 16 and 5000 to prevent memory crashes on glitchy data
                         steps = Math.max(16, Math.min(5000, steps));
 
                         for(let s = 0; s < steps; s++) {
@@ -117,7 +116,6 @@ export default class FileParser {
                     }
                     
                     if (feature.points.length > 0) features.push(feature);
-                    i = j - 2;
                 }
             }
         }
@@ -140,7 +138,7 @@ export default class FileParser {
             }
 
             features.push({
-                id: uuid(),
+                id: 'stl-mesh',
                 name: file.name,
                 type: 'mesh',
                 points: [
@@ -161,7 +159,7 @@ export default class FileParser {
     static async parseSTEP(file: File, settings?: any): Promise<CAMFeature[]> {
         const arrayBuffer = await file.arrayBuffer();
         return new Promise((resolve, reject) => {
-            const worker = new Worker(new URL('../../../workers/cam-step.worker.ts', import.meta.url), { type: 'module' });
+            const worker = new Worker(new URL('../../workers/cam-step.worker.ts', import.meta.url), { type: 'module' });
             worker.onmessage = (e) => {
                 if (e.data.success) {
                     resolve(e.data.features);

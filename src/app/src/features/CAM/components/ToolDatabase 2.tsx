@@ -7,14 +7,13 @@ import store from '../../../store';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/shadcn/Select';
 import { saveAsDialog } from '../../../lib/file-save';
 import { toast } from '../../../lib/toaster';
-import { useDispatch } from 'react-redux';
-import { useTypedSelector } from '../../../hooks/useTypedSelector';
-import * as camActions from '../../../store/redux/slices/cam.slice';
-import { v4 as uuid } from 'uuid';
 
-const ToolDatabase = () => {
-    const dispatch = useDispatch();
-    const tools = useTypedSelector(state => state.cam.tools);
+interface ToolDatabaseProps {
+    tools: CAMTool[];
+    onChange: (tools: CAMTool[]) => void;
+}
+
+const ToolDatabase = ({ tools, onChange }: ToolDatabaseProps) => {
     const [searchQuery, setSearchQuery] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
     const [itemsPerPage, setItemsPerPage] = useState<number>(() => store.get('cam.toolsPerPage', 5));
@@ -39,7 +38,7 @@ const ToolDatabase = () => {
 
     const handleAddTool = () => {
         const newTool: CAMTool = {
-            id: uuid(),
+            id: Math.random().toString(36).substr(2, 9),
             name: 'New Tool',
             type: 'Endmill',
             metricDiameter: 3.175,
@@ -53,16 +52,16 @@ const ToolDatabase = () => {
             toolLength: 30,
             angle: 0
         };
-        dispatch(camActions.setTools([...tools, newTool]));
+        onChange([...tools, newTool]);
         setCurrentPage(1); 
     };
 
     const handleUpdateTool = (id: string, updates: Partial<CAMTool>) => {
-        dispatch(camActions.setTools(tools.map(t => t.id === id ? { ...t, ...updates } : t)));
+        onChange(tools.map(t => t.id === id ? { ...t, ...updates } : t));
     };
 
     const handleRemoveTool = (id: string) => {
-        dispatch(camActions.setTools(tools.filter(t => t.id !== id)));
+        onChange(tools.filter(t => t.id !== id));
     };
 
     const handleExportTools = async () => {
@@ -88,12 +87,13 @@ const ToolDatabase = () => {
                 const mode = window.confirm('Click OK to MERGE with existing tools, or Cancel to REPLACE the entire database.') ? 'merge' : 'replace';
                 
                 if (mode === 'merge') {
+                    // Avoid duplicates by ID or Name
                     const existingNames = new Set(tools.map(t => (t.name || '').toLowerCase()));
                     const uniqueNew = importedTools.filter(t => t.name && !existingNames.has(t.name.toLowerCase()));
-                    dispatch(camActions.setTools([...tools, ...uniqueNew]));
+                    onChange([...tools, ...uniqueNew]);
                     toast.success(`Merged ${uniqueNew.length} new tools.`);
                 } else {
-                    dispatch(camActions.setTools(importedTools));
+                    onChange(importedTools);
                     toast.success('Tool database replaced.');
                 }
             } catch (err) {
@@ -101,7 +101,7 @@ const ToolDatabase = () => {
             }
         };
         reader.readAsText(file);
-        e.target.value = '';
+        e.target.value = ''; // Reset input
     };
 
     return (

@@ -1,5 +1,5 @@
 import React from 'react';
-import { CAMFeature, CAMPathingOption, CAMTool } from '../definitions';
+import { CAMFeature, CAMPathingOption, CAMTool, CAMSettings } from '../definitions';
 import { ControlledInput } from '../../../components/ControlledInput';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/shadcn/Select';
 import Switch from '../../../components/Switch';
@@ -7,13 +7,13 @@ import CAMAccessibility from '../utils/CAMAccessibility';
 import { Button } from '../../../components/Button';
 import { Palette, AlertTriangle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
-import { useDispatch } from 'react-redux';
-import { useTypedSelector } from '../../../hooks/useTypedSelector';
-import * as camActions from '../../../store/redux/slices/cam.slice';
-import { v4 as uuid } from 'uuid';
 
 interface ToolpathSettingsProps {
     features: CAMFeature[];
+    options: CAMPathingOption[];
+    tools: CAMTool[];
+    onChange: (options: CAMPathingOption[]) => void;
+    settings: CAMSettings;
 }
 
 const ToolpathInputRow = ({ label, description, control, className }: { label: string, description: string, control: React.ReactNode, className?: string }) => (
@@ -32,11 +32,10 @@ const DEFAULT_TOOLS: CAMTool[] = [
     { id: '3', name: '60deg V-Bit', type: 'V-Bit', metricDiameter: 6.35, imperialDiameter: 0.25, flutes: 1, stepover: 10, stepdown: 1, feedrate: 800, plungeRate: 200, spindleRPM: 20000, toolLength: 25, angle: 60 },
 ];
 
-const ToolpathSettings = ({ features }: ToolpathSettingsProps) => {
-    const dispatch = useDispatch();
-    const { options, tools, settings } = useTypedSelector(state => state.cam);
+const ToolpathSettings = ({ features, options, tools, onChange, settings }: ToolpathSettingsProps) => {
     const allTools = [...DEFAULT_TOOLS, ...tools];
 
+    // Pre-calculate bounds for all features once to optimize island detection
     const boundsMap = React.useMemo(() => {
         const map = new Map();
         features.forEach(f => {
@@ -51,7 +50,7 @@ const ToolpathSettings = ({ features }: ToolpathSettingsProps) => {
     const getOptionForFeature = (featureId: string) => {
         const feature = features.find(f => f.id === featureId);
         return options.find(o => o.featureId === featureId) || {
-            id: uuid(),
+            id: Math.random().toString(36).substr(2, 9),
             featureId,
             type: feature?.isFace ? 'pocket' : feature?.isEdge ? 'on-line' : 'outside',
             depth: feature?.cylinderRadius ? feature.cylinderRadius * 2 : settings.stockThickness,
@@ -77,8 +76,12 @@ const ToolpathSettings = ({ features }: ToolpathSettingsProps) => {
         };
 
         const updatedOption = deepMerge(existing, updates);
-        dispatch(camActions.updatePathing(updatedOption));
-        dispatch(camActions.pushToHistory());
+        
+        if (options.find(o => o.featureId === featureId)) {
+            onChange(options.map(o => o.featureId === featureId ? updatedOption : o));
+        } else {
+            onChange([...options, updatedOption]);
+        }
     };
 
     const applyBulkColorStrategy = (color: string) => {
@@ -93,17 +96,17 @@ const ToolpathSettings = ({ features }: ToolpathSettingsProps) => {
             if (idx > -1) {
                 newOptions[idx] = { ...newOptions[idx], type: firstMatch.type, toolId: firstMatch.toolId, depth: firstMatch.depth };
             } else {
-                newOptions.push({ ...firstMatch, featureId: f.id, id: uuid() });
+                newOptions.push({ ...firstMatch, featureId: f.id, id: Math.random().toString(36).substr(2, 9) });
             }
         });
-        dispatch(camActions.setPathingOptions(newOptions));
-        dispatch(camActions.pushToHistory());
+        onChange(newOptions);
     };
 
     if (features.length === 0) {
         return <div className="p-4 text-gray-500 italic">Select features in the left panel to configure toolpaths.</div>;
     }
 
+    // Get unique colors for bulk assignment
     const uniqueColors = Array.from(new Set(features.map(f => f.color).filter(Boolean))) as string[];
 
     return (

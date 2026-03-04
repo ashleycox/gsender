@@ -12,140 +12,173 @@ export default class GCodeGenerator {
     settings: CAMSettings;
     tools: CAMTool[];
 
-    constructor(features: CAMFeature[], options: CAMPathingOption[], settings: CAMSettings, tools: CAMTool[]) {
+    // Kinematic Tracking
+    private currentX = 0;
+    private currentY = 0;
+    private currentZ = 0;
+    private estimatedTimeSeconds = 0;
+    private lineNumber = 10;
+    private lastG0Pos = { x: -Infinity, y: -Infinity, z: -Infinity };
+    private zOffset = 0;
+    private scaleFactor = 1;
+
+    // Machine-Aware Kinematics
+    private accelXY = 500;
+    private accelZ = 50;
+
+    constructor(features: CAMFeature[], options: CAMPathingOption[], settings: CAMSettings, tools: CAMTool[], machineSettings?: Record<string, string>) {
         this.features = features;
         this.options = options;
         this.settings = settings;
         this.tools = tools;
+
+        // Pull real machine acceleration if provided (GRBL $120, $121, $122)
+        if (machineSettings) {
+            this.accelXY = Math.min(parseFloat(machineSettings['$120'] || '500'), parseFloat(machineSettings['$121'] || '500'));
+            this.accelZ = parseFloat(machineSettings['$122'] || '50');
+        }
+
+        this.currentZ = this.settings.safeZ;
+        this.zOffset = this.settings.zOrigin === 'bed' ? this.settings.stockThickness : 0;
+        
+        // Calculate scale factor once
+        this.scaleFactor = this.settings.scalingType === 'percentage' ? this.settings.scalePercentage / 100 : 1;
+        const selectedFeatures = this.features.filter(f => f.selected);
+        if (selectedFeatures.length > 0) {
+            const globalBounds = this.getBounds(selectedFeatures.flatMap(f => f.points));
+            if (this.settings.scalingType === 'dimensions' && this.settings.targetWidth > 0 && this.settings.targetHeight > 0 && globalBounds.width > 0 && globalBounds.height > 0) {
+                this.scaleFactor = Math.min(this.settings.targetWidth / globalBounds.width, this.settings.targetHeight / globalBounds.height);
+            }
+        }
     }
 
-    generate(): { gcode: string, estimatedTime: number } {
-        const { 
-            units, zOrigin, millingSide, safeZ, spindle, mist, flood, 
-            scalingType, scalePercentage, targetWidth, targetHeight, 
-            nestingX, nestingY, nestingSpacing, nestingType, 
-            stockThickness, stockWidth, stockLength,
-            startGcode, endGcode, gcodeComments, gcodeLineNumbers,
-            optimizePath, stayDownRapids, collisionDetection, setups, activeSetupId, tiling
-        } = this.settings;
-        const gcodeLines: string[] = [];
-        let estimatedTimeSeconds = 0;
-        let currentX = 0, currentY = 0, currentZ = safeZ;
-        let lineNumber = 10;
+    private getBounds(pts: {x: number, y: number}[]) {
+        if (!pts || pts.length === 0) return { width: 0, height: 0, minX: 0, maxX: 0, minY: 0, maxY: 0 };
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        pts.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
+        return { width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY), minX, maxX, minY, maxY };
+    }
 
-        const zOffset = zOrigin === 'bed' ? stockThickness : 0;
+    private updateTime(x: number, y: number, z: number, feedrate: number) {
+        const dx = x - this.currentX, dy = y - this.currentY, dz = z - this.currentZ;
+        const dist = Math.hypot(dx, dy, dz);
+        if (dist > 0.001) {
+            const f = feedrate > 0 ? feedrate : 3000;
+            const vMax = f / 60; // mm/s
+            const a = Math.abs(dz) > Math.abs(dx) && Math.abs(dz) > Math.abs(dy) ? this.accelZ : this.accelXY;
+            const tAccel = vMax / a;
+            const dAccel = 0.5 * a * tAccel * tAccel;
+            if (dist >= 2 * dAccel) this.estimatedTimeSeconds += (2 * tAccel) + ((dist - 2 * dAccel) / vMax);
+            else this.estimatedTimeSeconds += 2 * Math.sqrt(dist / a);
+        }
+        this.currentX = x; this.currentY = y; this.currentZ = z;
+    }
 
-        // Kinematic Estimation parameters (assumed typical GRBL defaults if not provided)
-        const accelXY = 500; // mm/s^2
-        const accelZ = 50; // mm/s^2
+    private formatLine(line: string, nx?: number, ny?: number, nz?: number, f?: number): string | null {
+        let finalLine = line;
 
-        const updateTime = (x: number, y: number, z: number, feedrate: number) => {
-            const dx = x - currentX, dy = y - currentY, dz = z - currentZ;
-            const dist = Math.hypot(dx, dy, dz);
-            if (dist > 0.001) {
-                const f = feedrate > 0 ? feedrate : 3000;
-                const vMax = f / 60; // mm/s
-                const a = Math.abs(dz) > Math.abs(dx) && Math.abs(dz) > Math.abs(dy) ? accelZ : accelXY;
-                const tAccel = vMax / a;
-                const dAccel = 0.5 * a * tAccel * tAccel;
-                if (dist >= 2 * dAccel) estimatedTimeSeconds += (2 * tAccel) + ((dist - 2 * dAccel) / vMax);
-                else estimatedTimeSeconds += 2 * Math.sqrt(dist / a);
-            }
-            currentX = x; currentY = y; currentZ = z;
+        // Redundant G0 Removal
+        if (finalLine.startsWith('G0') && !finalLine.includes(';') && !finalLine.includes('(')) {
+            const isZ = finalLine.includes('Z'), isXY = finalLine.includes('X') || finalLine.includes('Y');
+            if (isZ && !isXY && nz !== undefined && Math.abs(nz - this.lastG0Pos.z) < 0.001) return null;
+            if (isXY && !isZ && nx !== undefined && ny !== undefined && Math.abs(nx - this.lastG0Pos.x) < 0.001 && Math.abs(ny - this.lastG0Pos.y) < 0.001) return null;
+
+            if (nz !== undefined) this.lastG0Pos.z = nz;
+            if (nx !== undefined && ny !== undefined) { this.lastG0Pos.x = nx; this.lastG0Pos.y = ny; }
+        } else if (finalLine.startsWith('G1')) {
+            this.lastG0Pos = { x: -Infinity, y: -Infinity, z: -Infinity };
+        }
+
+        if (!this.settings.gcodeComments) {
+            finalLine = finalLine.replace(/\(.*\)/g, '').replace(/;.*$/, '').trim();
+        }
+
+        if (!finalLine) return null;
+
+        if (this.settings.gcodeLineNumbers) {
+            finalLine = `N${this.lineNumber} ${finalLine}`;
+            this.lineNumber += 10;
+        }
+
+        if (nx !== undefined && ny !== undefined && nz !== undefined) this.updateTime(nx, ny, nz, f || 0);
+        return finalLine;
+    }
+
+    private generateHeader(): string[] {
+        const lines: string[] = [];
+        const push = (l: string, nx?: number, ny?: number, nz?: number, f?: number) => {
+            const res = this.formatLine(l, nx, ny, nz, f);
+            if (res) lines.push(res);
         };
 
-        let lastG0X = -Infinity, lastG0Y = -Infinity, lastG0Z = -Infinity;
-
-        const pushLine = (line: string, nx?: number, ny?: number, nz?: number, f?: number) => {
-            let finalLine = line;
-            
-            // --- AIR-TIME OPTIMIZER: Redundant G0 Removal ---
-            if (finalLine.startsWith('G0')) {
-                const isZMove = finalLine.includes('Z');
-                const isXYMove = finalLine.includes('X') || finalLine.includes('Y');
-                
-                // Only filter simple positional G0s
-                if (!finalLine.includes(';') && !finalLine.includes('(')) {
-                    if (isZMove && !isXYMove && nz !== undefined) {
-                        if (Math.abs(nz - lastG0Z) < 0.001) return; // Skip redundant Z
-                        lastG0Z = nz;
-                    }
-                    if (isXYMove && !isZMove && nx !== undefined && ny !== undefined) {
-                        if (Math.abs(nx - lastG0X) < 0.001 && Math.abs(ny - lastG0Y) < 0.001) return; // Skip redundant XY
-                        lastG0X = nx; lastG0Y = ny;
-                    }
-                }
-            } else if (finalLine.startsWith('G1')) {
-                // If we make a cutting move, invalidate the G0 cache so the next G0 is forced
-                lastG0X = -Infinity; lastG0Y = -Infinity; lastG0Z = -Infinity;
-            }
-
-            // Handle Comments
-            if (gcodeComments === false) {
-                finalLine = finalLine.replace(/\(.*\)/g, '').replace(/;.*$/, '').trim();
-            }
-            
-            if (finalLine) {
-                // Handle Line Numbers
-                if (gcodeLineNumbers) {
-                    finalLine = `N${lineNumber} ${finalLine}`;
-                    lineNumber += 10;
-                }
-                gcodeLines.push(finalLine);
-            }
-            
-            if (nx !== undefined && ny !== undefined && nz !== undefined) updateTime(nx, ny, nz, f || 0);
-        };
-
-        let scaleFactor = scalingType === 'percentage' ? scalePercentage / 100 : 1;
-        let designWidth = 0, designHeight = 0;
+        push('(--- gSender CAM Generated G-Code ---)');
+        push(`(STOCK_BOX: W=${this.settings.stockWidth}, L=${this.settings.stockLength}, T=${this.settings.stockThickness}, Z_REF=${this.settings.zOrigin})`);
         
-        const getBounds = (pts: {x: number, y: number}[]) => {
-            if (!pts || pts.length === 0) return { width: 0, height: 0, minX: 0, maxX: 0, minY: 0, maxY: 0 };
-            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-            pts.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
-            return { width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY), minX, maxX, minY, maxY };
+        // Setup visualizer bounding box
+        const vSafeZ = this.settings.safeZ + this.zOffset + 50; 
+        push(`G0 Z${vSafeZ.toFixed(3)}`, 0, 0, vSafeZ);
+        push(`G0 X0 Y0`, 0, 0, vSafeZ);
+        push(`G0 X${this.settings.stockWidth} Y0`, this.settings.stockWidth, 0, vSafeZ);
+        push(`G0 X${this.settings.stockWidth} Y${this.settings.stockLength}`, this.settings.stockWidth, this.settings.stockLength, vSafeZ);
+        push(`G0 X0 Y${this.settings.stockLength}`, 0, this.settings.stockLength, vSafeZ);
+        push(`G0 X0 Y0`, 0, 0, vSafeZ);
+
+        push('(ORIGIN_TRIPOD: X=Red, Y=Green, Z=Blue)');
+        push(`G0 X0 Y0 Z${this.zOffset}`, 0, 0, this.zOffset);
+        push(`G0 X10 Y0`, 10, 0, this.zOffset);
+        push(`G0 X0 Y0`, 0, 0, this.zOffset);
+        push(`G0 X0 Y10`, 0, 10, this.zOffset);
+        push(`G0 X0 Y0`, 0, 0, this.zOffset);
+        push(`G0 X0 Y0 Z${this.zOffset + 10}`, 0, 0, this.zOffset + 10);
+        push(`G0 Z${(this.settings.safeZ + this.zOffset).toFixed(3)}`, 0, 0, this.settings.safeZ + this.zOffset);
+
+        if (this.settings.startGcode) {
+            push('\n(--- START CUSTOM G-CODE ---)');
+            this.settings.startGcode.split('\n').forEach(l => push(l));
+            push('(--- END CUSTOM G-CODE ---)\n');
+        }
+
+        push(this.settings.units === 'mm' ? 'G21' : 'G20');
+        push('G90\nG17');
+        
+        return lines;
+    }
+
+    private generateFooter(): string[] {
+        const lines: string[] = [];
+        const push = (l: string, nx?: number, ny?: number, nz?: number, f?: number) => {
+            const res = this.formatLine(l, nx, ny, nz, f);
+            if (res) lines.push(res);
+        };
+
+        push('\n(Footer)');
+        push('M5 ; spindle off');
+        if (this.settings.mist || this.settings.flood) push('M9 ; coolant off');
+        push(`G0 X0 Y0 ; return home`, 0, 0, this.currentZ, 0);
+
+        if (this.settings.endGcode) {
+            push('\n(--- START CUSTOM END G-CODE ---)');
+            this.settings.endGcode.split('\n').forEach(l => push(l));
+            push('(--- END CUSTOM END G-CODE ---)\n');
+        }
+
+        push('M30 ; end of program');
+        push('(--- END OF PROGRAM ---)');
+        return lines;
+    }
+
+    public generate(): { gcode: string, estimatedTime: number } {
+        const gcodeLines = [...this.generateHeader()];
+        const pushLine = (l: string, nx?: number, ny?: number, nz?: number, f?: number) => {
+            const res = this.formatLine(l, nx, ny, nz, f);
+            if (res) gcodeLines.push(res);
         };
 
         const selectedFeatures = this.features.filter(f => f.selected);
-        if (selectedFeatures.length > 0) {
-            const globalBounds = getBounds(selectedFeatures.flatMap(f => f.points));
-            if (scalingType === 'dimensions' && targetWidth > 0 && targetHeight > 0 && globalBounds.width > 0 && globalBounds.height > 0) {
-                scaleFactor = Math.min(targetWidth / globalBounds.width, targetHeight / globalBounds.height);
-            }
-            designWidth = globalBounds.width * scaleFactor;
-            designHeight = globalBounds.height * scaleFactor;
-        }
+        const globalBounds = this.getBounds(selectedFeatures.flatMap(f => f.points));
+        const designWidth = globalBounds.width * this.scaleFactor;
+        const designHeight = globalBounds.height * this.scaleFactor;
 
-        // --- VISUALIZER OVERLAYS ---
-        pushLine('(--- VISUALIZER OVERLAYS ---)');
-        pushLine(`(STOCK_BOX: W=${stockWidth}, L=${stockLength}, T=${stockThickness}, Z_REF=${zOrigin})`);
-        
-        const vSafeZ = safeZ + zOffset + 50; 
-        pushLine(`G0 Z${vSafeZ.toFixed(3)}`);
-        pushLine(`G0 X0 Y0`);
-        pushLine(`G0 X${stockWidth} Y0`);
-        pushLine(`G0 X${stockWidth} Y${stockLength}`);
-        pushLine(`G0 X0 Y${stockLength}`);
-        pushLine(`G0 X0 Y0`);
-
-        pushLine('(ORIGIN_TRIPOD: X=Red, Y=Green, Z=Blue)');
-        pushLine(`G0 X0 Y0 Z${zOffset}`);
-        pushLine(`G0 X10 Y0`);
-        pushLine(`G0 X0 Y0`);
-        pushLine(`G0 X0 Y10`);
-        pushLine(`G0 X0 Y0`);
-        pushLine(`G0 X0 Y0 Z${zOffset + 10}`);
-        pushLine(`G0 Z${(safeZ + zOffset).toFixed(3)}`);
-
-        // --- START G-CODE INJECTION ---
-        if (startGcode) {
-            pushLine('\n(--- START CUSTOM G-CODE ---)');
-            startGcode.split('\n').forEach(line => pushLine(line));
-            pushLine('(--- END CUSTOM G-CODE ---)\n');
-        }
-
-        // --- ACTUAL OPERATIONS ---
         const operations = selectedFeatures.map(feature => {
             const option = this.options.find(o => o.featureId === feature.id);
             const tool = option ? [...DEFAULT_TOOLS, ...this.tools].find(t => t.id === option.toolId) : undefined;
@@ -154,26 +187,24 @@ export default class GCodeGenerator {
 
         const typePriority: Record<string, number> = { 'pocket': 0, 'inside': 1, 'on-line': 2, 'outside': 3, '3d-raster': 4 };
         operations.sort((a, b) => {
-            // Primary sort by user-defined order
             const orderA = a.feature.order ?? 9999;
             const orderB = b.feature.order ?? 9999;
             if (orderA !== orderB) return orderA - orderB;
-
-            // Secondary sort by tool
             if (a.tool!.id !== b.tool!.id) return a.tool!.id.localeCompare(b.tool!.id);
-            
-            // Tertiary sort by strategy
             return (typePriority[a.option!.type] || 0) - (typePriority[b.option!.type] || 0);
         });
 
+        if (operations.length === 0) {
+            return { gcode: gcodeLines.join('\n'), estimatedTime: 0 };
+        }
+
         const initialRPM = operations[0]?.tool?.spindleRPM || 10000;
-
         pushLine('\n(--- MAIN PROGRAM ---)');
-        pushLine(`(Z-Origin: ${zOrigin.toUpperCase()})`);
+        pushLine(`(Z-Origin: ${this.settings.zOrigin.toUpperCase()})`);
 
-        if (collisionDetection?.enabled) {
+        if (this.settings.collisionDetection?.enabled) {
             pushLine(`(--- COLLISION DETECTION ENABLED ---)`);
-            pushLine(`(Collet Dia: ${collisionDetection.colletDiameter}mm, Collet Len: ${collisionDetection.colletLength}mm)`);
+            pushLine(`(Collet Dia: ${this.settings.collisionDetection.colletDiameter}mm, Collet Len: ${this.settings.collisionDetection.colletLength}mm)`);
             operations.forEach(op => {
                 if (op.option!.depth > op.tool!.toolLength) {
                     pushLine(`(WARNING: Tool ${op.tool!.name} cutting deeper than tool length! Collet collision highly likely.)`);
@@ -181,28 +212,23 @@ export default class GCodeGenerator {
             });
         }
 
-        pushLine(units === 'mm' ? 'G21' : 'G20');
-        pushLine('G90\nG17');
-        
-        // Post-Processor Spindle Start
         if (operations[0]?.tool?.type === 'Laser') {
-            pushLine(`M4 S0`); // Dynamic laser power
+            pushLine(`M4 S0`);
         } else {
-            pushLine(`${spindle} S${initialRPM}`);
+            pushLine(`${this.settings.spindle} S${initialRPM}`);
         }
         
-        if (mist) pushLine('M7');
-        if (flood) pushLine('M8');
-        pushLine(`G0 Z${(safeZ + zOffset).toFixed(3)}`, currentX, currentY, safeZ + zOffset, 0);
+        if (this.settings.mist) pushLine('M7');
+        if (this.settings.flood) pushLine('M8');
+        pushLine(`G0 Z${(this.settings.safeZ + this.zOffset).toFixed(3)}`, this.currentX, this.currentY, this.settings.safeZ + this.zOffset, 0);
 
         let currentToolId: string | null = null;
         let currentTileId: string | null = null;
-        const totalNestX = nestingType === 'true-shape' ? 1 : Math.max(1, nestingX);
-        const totalNestY = nestingType === 'true-shape' ? 1 : Math.max(1, nestingY);
+        const totalNestX = this.settings.nestingType === 'true-shape' ? 1 : Math.max(1, this.settings.nestingX);
+        const totalNestY = this.settings.nestingType === 'true-shape' ? 1 : Math.max(1, this.settings.nestingY);
 
-        // Path Optimization (Nearest Neighbor)
         let optimizedOperations = [...operations];
-        if (optimizePath) {
+        if (this.settings.optimizePath) {
             const result: typeof operations = [];
             let currentPos = { x: 0, y: 0 };
             const remaining = [...operations];
@@ -239,15 +265,15 @@ export default class GCodeGenerator {
         }
 
         const handleRetract = (nextX?: number, nextY?: number) => {
-            if (stayDownRapids?.enabled && nextX !== undefined && nextY !== undefined) {
-                const dist = Math.hypot(nextX - currentX, nextY - currentY);
-                if (dist <= stayDownRapids.maxDistance) {
-                    const skimZ = zOffset + stayDownRapids.skimHeight;
-                    pushLine(`G0 Z${skimZ.toFixed(3)} ; Stay-down rapid`, currentX, currentY, skimZ, 0);
+            if (this.settings.stayDownRapids?.enabled && nextX !== undefined && nextY !== undefined) {
+                const dist = Math.hypot(nextX - this.currentX, nextY - this.currentY);
+                if (dist <= this.settings.stayDownRapids.maxDistance) {
+                    const skimZ = this.zOffset + this.settings.stayDownRapids.skimHeight;
+                    pushLine(`G0 Z${skimZ.toFixed(3)} ; Stay-down rapid`, this.currentX, this.currentY, skimZ, 0);
                     return;
                 }
             }
-            pushLine(`G0 Z${(safeZ + zOffset).toFixed(3)}`, currentX, currentY, safeZ + zOffset, 0);
+            pushLine(`G0 Z${(this.settings.safeZ + this.zOffset).toFixed(3)}`, this.currentX, this.currentY, this.settings.safeZ + this.zOffset, 0);
         };
 
         optimizedOperations.forEach(({ feature, option, tool }, index) => {
@@ -257,36 +283,27 @@ export default class GCodeGenerator {
                 pushLine(`\n(--- Tool Change: ${tool.name} ---)`);
                 pushLine(`(Tool Length: ${tool.toolLength}mm, Type: ${tool.type})`);
                 pushLine(`M5 ; Stop Spindle`);
-                
-                // Smart Tool-Change Orchestrator: Safe Change Zone
-                pushLine(`G0 Z${(safeZ + zOffset).toFixed(3)} ; Retract to Safe Z`);
-                // Move to a safe location for tool change (e.g. machine front-center or home)
+                pushLine(`G0 Z${(this.settings.safeZ + this.zOffset).toFixed(3)} ; Retract to Safe Z`);
                 pushLine(`G28 Z ; Home Z-axis for tool clearance`);
                 pushLine(`G28 X Y ; Optional: Move to tool change position (Home XY)`);
-                
                 const numericToolId = parseInt(tool.id.replace(/\D/g, '')) || 1;
                 pushLine(`T${numericToolId} M6 ; Request Tool ${numericToolId}`);
-                
-                // Return from tool change
                 pushLine(`(Tool Change Complete. Returning to work area...)`);
-                
-                pushLine(`${spindle} S${tool.spindleRPM} ; Start Spindle`);
+                pushLine(`${this.settings.spindle} S${tool.spindleRPM} ; Start Spindle`);
                 pushLine(`G4 P2.0 ; Dwell for spin-up`);
                 currentToolId = tool.id;
             }
 
             for (let ny = 0; ny < totalNestY; ny++) {
                 for (let nx = 0; nx < totalNestX; nx++) {
-                    const offsetX = nx * (designWidth + nestingSpacing);
-                    const offsetY = ny * (designHeight + nestingSpacing);
+                    const offsetX = nx * (designWidth + this.settings.nestingSpacing);
+                    const offsetY = ny * (designHeight + this.settings.nestingSpacing);
                     
                     let paths = this.calculateToolpaths(feature, option, tool, feature);
-                    
-                    // Setup Transformation
-                    let activeSetup = setups?.find(s => s.id === activeSetupId);
+                    let activeSetup = this.settings.setups?.find(s => s.id === this.settings.activeSetupId);
                     const orientation = activeSetup?.orientation || 'top';
-                    if (orientation === 'bottom' || millingSide === 'bottom') {
-                        const bounds = getBounds(feature.points);
+                    if (orientation === 'bottom' || this.settings.millingSide === 'bottom') {
+                        const bounds = this.getBounds(feature.points);
                         paths = paths.map(path => path.map(p => ({ ...p, x: bounds.maxX - (p.x - bounds.minX) })));
                     } else if (orientation === 'left') {
                         paths = paths.map(path => path.map(p => ({ x: -p.z || 0, y: p.y, z: p.x })));
@@ -299,9 +316,9 @@ export default class GCodeGenerator {
                     }
 
                     paths = paths.map(path => path.map(p => ({ 
-                        x: (p.x * scaleFactor) + offsetX, 
-                        y: (p.y * scaleFactor) + offsetY,
-                        z: p.z !== undefined ? (p.z * scaleFactor) : undefined
+                        x: (p.x * this.scaleFactor) + offsetX, 
+                        y: (p.y * this.scaleFactor) + offsetY,
+                        z: p.z !== undefined ? (p.z * this.scaleFactor) : undefined
                     })));
 
                     pushLine(`\n(Feature: ${feature.name} | Nest: ${nx},${ny})`);
@@ -310,17 +327,16 @@ export default class GCodeGenerator {
                         const center = this.calculateCenter(paths[0]);
                         const holeRadius = this.calculateRadius(paths[0], center);
                         const cutRadius = Math.max(0.00001, holeRadius - (tool.metricDiameter / 2));
-                        pushLine(`G0 X${(center.x + cutRadius).toFixed(3)} Y${center.y.toFixed(3)}`, center.x + cutRadius, center.y, currentZ, 0);
-                        pushLine(`G0 Z${(zOffset + 1.0).toFixed(3)}`, currentX, currentY, zOffset + 1.0, 0);
+                        pushLine(`G0 X${(center.x + cutRadius).toFixed(3)} Y${center.y.toFixed(3)}`, center.x + cutRadius, center.y, this.currentZ, 0);
+                        pushLine(`G0 Z${(this.zOffset + 1.0).toFixed(3)}`, this.currentX, this.currentY, this.zOffset + 1.0, 0);
                         
                         const safeStepdown = Math.max(0.00001, tool.stepdown);
                         let depth = 0;
                         while (depth < option.depth) {
                             depth = Math.min(depth + safeStepdown, option.depth);
-                            pushLine(`G3 X${(center.x + cutRadius).toFixed(3)} Y${center.y.toFixed(3)} Z${(zOffset - depth).toFixed(3)} I-${cutRadius.toFixed(3)} J0 F${tool.feedrate}`, currentX, currentY, zOffset - depth, tool.feedrate);
+                            pushLine(`G3 X${(center.x + cutRadius).toFixed(3)} Y${center.y.toFixed(3)} Z${(this.zOffset - depth).toFixed(3)} I-${cutRadius.toFixed(3)} J0 F${tool.feedrate}`, this.currentX, this.currentY, this.zOffset - depth, tool.feedrate);
                         }
-                        pushLine(`G3 X${(center.x + cutRadius).toFixed(3)} Y${center.y.toFixed(3)} I-${cutRadius.toFixed(3)} J0 F${tool.feedrate}`, currentX, currentY, currentZ, tool.feedrate);
-                        
+                        pushLine(`G3 X${(center.x + cutRadius).toFixed(3)} Y${center.y.toFixed(3)} I-${cutRadius.toFixed(3)} J0 F${tool.feedrate}`, this.currentX, this.currentY, this.currentZ, tool.feedrate);
                         const nextOp = optimizedOperations[index + 1];
                         handleRetract(nextOp?.feature.points[0]?.x, nextOp?.feature.points[0]?.y);
                         continue;
@@ -328,34 +344,31 @@ export default class GCodeGenerator {
 
                     paths.forEach((path, pathIdx) => {
                         if (path.length === 0) return;
-                        
-                        // Check Tiling
-                        if (tiling?.enabled) {
+                        if (this.settings.tiling?.enabled) {
                             const start = path[0];
-                            const tileX = Math.floor(start.x / tiling.tileWidth);
-                            const tileY = Math.floor(start.y / tiling.tileHeight);
+                            const tileX = Math.floor(start.x / this.settings.tiling.tileWidth);
+                            const tileY = Math.floor(start.y / this.settings.tiling.tileHeight);
                             const tileId = `${tileX},${tileY}`;
                             if (currentTileId !== null && currentTileId !== tileId) {
                                 pushLine(`\n(--- TILE SHIFT REQUIRED ---)`);
-                                pushLine(`G0 Z${(safeZ + zOffset + 50).toFixed(3)} ; Safe lift for material slide`);
+                                pushLine(`G0 Z${(this.settings.safeZ + this.zOffset + 50).toFixed(3)} ; Safe lift for material slide`);
                                 pushLine(`M0 ; PAUSE: Slide material to Tile ${tileX}, ${tileY}`);
-                                pushLine(`G0 Z${(safeZ + zOffset).toFixed(3)}`);
+                                pushLine(`G0 Z${(this.settings.safeZ + this.zOffset).toFixed(3)}`);
                             }
                             currentTileId = tileId;
                         }
 
                         const isLaser = tool.type === 'Laser';
-
                         if (option.type === '3d-raster' && !isLaser) {
                             const start = path[0];
-                            pushLine(`G0 X${start.x.toFixed(3)} Y${start.y.toFixed(3)}`, start.x, start.y, currentZ, 0);
-                            pushLine(`G0 Z${(zOffset + 1.0).toFixed(3)}`, currentX, currentY, zOffset + 1.0, 0);
+                            pushLine(`G0 X${start.x.toFixed(3)} Y${start.y.toFixed(3)}`, start.x, start.y, this.currentZ, 0);
+                            pushLine(`G0 Z${(this.zOffset + 1.0).toFixed(3)}`, this.currentX, this.currentY, this.zOffset + 1.0, 0);
                             let pathMaxZ = -Infinity;
                             path.forEach(p => { if(p.z !== undefined && p.z > pathMaxZ) pathMaxZ = p.z; });
                             for (let i = 0; i < path.length; i++) {
                                 const pt = path[i];
                                 const normalizedZ = pt.z !== undefined ? pt.z - pathMaxZ : 0; 
-                                const zDepth = zOffset + Math.max(-option.depth, normalizedZ); 
+                                const zDepth = this.zOffset + Math.max(-option.depth, normalizedZ); 
                                 pushLine(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} Z${zDepth.toFixed(3)} F${tool.feedrate}`, pt.x, pt.y, zDepth, tool.feedrate);
                             }
                             const nextPath = paths[pathIdx + 1];
@@ -365,48 +378,42 @@ export default class GCodeGenerator {
                         }
 
                         const start = path[0];
-                        
                         if (option.type === 'v-carve' || option.type === 'v-carve-inlay') {
-                            pushLine(`G0 X${start.x.toFixed(3)} Y${start.y.toFixed(3)}`, start.x, start.y, currentZ, 0);
-                            if (!isLaser) pushLine(`G0 Z${(zOffset + 1.0).toFixed(3)}`, currentX, currentY, zOffset + 1.0, 0);
+                            pushLine(`G0 X${start.x.toFixed(3)} Y${start.y.toFixed(3)}`, start.x, start.y, this.currentZ, 0);
+                            if (!isLaser) pushLine(`G0 Z${(this.zOffset + 1.0).toFixed(3)}`, this.currentX, this.currentY, this.zOffset + 1.0, 0);
                             for (let i = 0; i < path.length; i++) {
                                 const pt = path[i];
-                                const tz = zOffset + (pt.z || 0);
-                                if (i === 0 && !isLaser) pushLine(`G1 Z${tz.toFixed(3)} F${tool.plungeRate}`, currentX, currentY, tz, tool.plungeRate);
-                                else if (isLaser && i === 0) pushLine(`M4 S${tool.spindleRPM}`); // Start burn
-                                
-                                if (isLaser) pushLine(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F${tool.feedrate}`, pt.x, pt.y, currentZ, tool.feedrate);
+                                const tz = this.zOffset + (pt.z || 0);
+                                if (i === 0 && !isLaser) pushLine(`G1 Z${tz.toFixed(3)} F${tool.plungeRate}`, this.currentX, this.currentY, tz, tool.plungeRate);
+                                else if (isLaser && i === 0) pushLine(`M4 S${tool.spindleRPM}`);
+                                if (isLaser) pushLine(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F${tool.feedrate}`, pt.x, pt.y, this.currentZ, tool.feedrate);
                                 else pushLine(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} Z${tz.toFixed(3)} F${tool.feedrate}`, pt.x, pt.y, tz, tool.feedrate);
                             }
-                            if (isLaser) pushLine(`G1 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} F${tool.feedrate}`, start.x, start.y, currentZ, tool.feedrate);
-                            else pushLine(`G1 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} Z${(zOffset + (start.z || 0)).toFixed(3)} F${tool.feedrate}`, start.x, start.y, zOffset + (start.z || 0), tool.feedrate);
-                            
-                            if (isLaser) pushLine(`M5`); // Stop burn
+                            if (isLaser) pushLine(`G1 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} F${tool.feedrate}`, start.x, start.y, this.currentZ, tool.feedrate);
+                            else pushLine(`G1 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} Z${(this.zOffset + (start.z || 0)).toFixed(3)} F${tool.feedrate}`, start.x, start.y, this.zOffset + (start.z || 0), tool.feedrate);
+                            if (isLaser) pushLine(`M5`);
                             const nextPath = paths[pathIdx + 1];
                             const nextOp = optimizedOperations[index + 1];
                             handleRetract(nextPath?.[0]?.x || nextOp?.feature.points[0]?.x, nextPath?.[0]?.y || nextOp?.feature.points[0]?.y);
                             return;
                         }
 
-                        pushLine(`G0 X${start.x.toFixed(3)} Y${start.y.toFixed(3)}`, start.x, start.y, currentZ, 0);
-                        if (!isLaser) pushLine(`G0 Z${(zOffset + 1.0).toFixed(3)}`, currentX, currentY, zOffset + 1.0, 0);
-                        
+                        pushLine(`G0 X${start.x.toFixed(3)} Y${start.y.toFixed(3)}`, start.x, start.y, this.currentZ, 0);
+                        if (!isLaser) pushLine(`G0 Z${(this.zOffset + 1.0).toFixed(3)}`, this.currentX, this.currentY, this.zOffset + 1.0, 0);
                         const safeStepdown = Math.max(0.00001, tool.stepdown);
                         let currentPassDepth = 0;
                         while (currentPassDepth < option.depth) {
                             currentPassDepth = Math.min(currentPassDepth + safeStepdown, option.depth);
-                            const targetZ = zOffset - currentPassDepth;
-                            
-                            if (isLaser) {
-                                pushLine(`M4 S${tool.spindleRPM}`);
-                            } else {
+                            const targetZ = this.zOffset - currentPassDepth;
+                            if (isLaser) pushLine(`M4 S${tool.spindleRPM}`);
+                            else {
                                 if (path.length > 1) {
                                     const nextPt = path[1];
                                     if (option.leadIn?.type === 'linear') {
                                         const dist = option.leadIn.distance || 5;
                                         const dx = start.x - nextPt.x, dy = start.y - nextPt.y, l = Math.hypot(dx, dy) || 1;
                                         const lx = start.x + (dx/l) * dist, ly = start.y + (dy/l) * dist;
-                                        pushLine(`G0 X${lx.toFixed(3)} Y${ly.toFixed(3)}`, lx, ly, currentZ, 0);
+                                        pushLine(`G0 X${lx.toFixed(3)} Y${ly.toFixed(3)}`, lx, ly, this.currentZ, 0);
                                         pushLine(`G1 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} Z${targetZ.toFixed(3)} F${tool.plungeRate} ; Lead-In Linear`, start.x, start.y, targetZ, tool.plungeRate);
                                     } else if (option.leadIn?.type === 'arc') {
                                         const dist = option.leadIn.distance || 5;
@@ -414,7 +421,7 @@ export default class GCodeGenerator {
                                         const nx = dy/l, ny = -dx/l;
                                         const cx = start.x + nx * (dist/2), cy = start.y + ny * (dist/2);
                                         const startX = start.x + nx * dist, startY = start.y + ny * dist;
-                                        pushLine(`G0 X${startX.toFixed(3)} Y${startY.toFixed(3)}`, startX, startY, currentZ, 0);
+                                        pushLine(`G0 X${startX.toFixed(3)} Y${startY.toFixed(3)}`, startX, startY, this.currentZ, 0);
                                         pushLine(`G1 Z${targetZ.toFixed(3)} F${tool.plungeRate}`, startX, startY, targetZ, tool.plungeRate);
                                         pushLine(`G3 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} I${(cx - startX).toFixed(3)} J${(cy - startY).toFixed(3)} F${tool.feedrate} ; Lead-In Arc`, start.x, start.y, targetZ, tool.feedrate);
                                     } else if (option.leadIn?.type === 'helical') {
@@ -423,33 +430,21 @@ export default class GCodeGenerator {
                                         const nx = dy/l, ny = -dx/l;
                                         const cx = start.x + nx * (dist/2), cy = start.y + ny * (dist/2);
                                         const startX = start.x + nx * dist, startY = start.y + ny * dist;
-                                        pushLine(`G0 X${startX.toFixed(3)} Y${startY.toFixed(3)}`, startX, startY, currentZ, 0);
+                                        pushLine(`G0 X${startX.toFixed(3)} Y${startY.toFixed(3)}`, startX, startY, this.currentZ, 0);
                                         pushLine(`G3 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} Z${targetZ.toFixed(3)} I${(cx - startX).toFixed(3)} J${(cy - startY).toFixed(3)} F${tool.plungeRate} ; Lead-In Helical`, start.x, start.y, targetZ, tool.plungeRate);
                                     } else {
                                         const rampX = start.x + (nextPt.x - start.x) * 0.1, rampY = start.y + (nextPt.y - start.y) * 0.1;
                                         pushLine(`G1 X${rampX.toFixed(3)} Y${rampY.toFixed(3)} Z${targetZ.toFixed(3)} F${tool.plungeRate} ; Ramping`, rampX, rampY, targetZ, tool.plungeRate);
                                     }
-                                } else {
-                                    pushLine(`G1 Z${targetZ.toFixed(3)} F${tool.plungeRate}`, currentX, currentY, targetZ, tool.plungeRate);
-                                }
+                                } else pushLine(`G1 Z${targetZ.toFixed(3)} F${tool.plungeRate}`, this.currentX, this.currentY, targetZ, tool.plungeRate);
                             }
-                            
                             for (let i = 1; i < path.length; i++) {
                                 const pt = path[i];
-                                pushLine(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F${tool.feedrate}`, pt.x, pt.y, currentZ, tool.feedrate);
+                                pushLine(`G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F${tool.feedrate}`, pt.x, pt.y, this.currentZ, tool.feedrate);
                             }
-                            
-                            // Auto-close shapes if they are drawn from basic geometry
-                            if (['circle', 'rectangle', 'hole'].includes(feature.type)) {
-                                pushLine(`G1 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} F${tool.feedrate}`, start.x, start.y, currentZ, tool.feedrate);
-                            }
-                            
-                            if (isLaser) {
-                                pushLine(`M5`);
-                                break;
-                            }
+                            if (['circle', 'rectangle', 'hole'].includes(feature.type)) pushLine(`G1 X${start.x.toFixed(3)} Y${start.y.toFixed(3)} F${tool.feedrate}`, start.x, start.y, this.currentZ, tool.feedrate);
+                            if (isLaser) { pushLine(`M5`); break; }
                         }
-                        
                         const nextPath = paths[pathIdx + 1];
                         const nextOp = optimizedOperations[index + 1];
                         handleRetract(nextPath?.[0]?.x || nextOp?.feature.points[0]?.x, nextPath?.[0]?.y || nextOp?.feature.points[0]?.y);
@@ -458,24 +453,11 @@ export default class GCodeGenerator {
             }
         });
 
-        pushLine('\n(Footer)');
-        pushLine('M5 ; spindle off');
-        if (mist || flood) pushLine('M9 ; coolant off');
-        pushLine('G0 X0 Y0 ; return home', 0, 0, currentZ, 0);
-
-        // --- END G-CODE INJECTION ---
-        if (endGcode) {
-            pushLine('\n(--- START CUSTOM G-CODE ---)');
-            endGcode.split('\n').forEach(line => pushLine(line));
-            pushLine('(--- END CUSTOM G-CODE ---)\n');
-        }
-
-        pushLine('M30 ; end of program');
-
-        return { gcode: gcodeLines.join('\n'), estimatedTime: estimatedTimeSeconds / 60 };
+        gcodeLines.push(...this.generateFooter());
+        return { gcode: gcodeLines.join('\n'), estimatedTime: this.estimatedTimeSeconds / 60 };
     }
 
-    calculateToolpaths(f: CAMFeature, o: CAMPathingOption, t: CAMTool, raw?: CAMFeature) {
+    private calculateToolpaths(f: CAMFeature, o: CAMPathingOption, t: CAMTool, raw?: CAMFeature) {
         if (o.type === '3d-raster') return this.generateRasterPath(f.points, t, raw, o);
         let paths = [f.points];
         if (o.type === 'outside') paths = this.offsetPath(f.points, t.metricDiameter / 2);
@@ -487,23 +469,16 @@ export default class GCodeGenerator {
             const flatDepth = o.vCarveFlatDepth || o.depth;
             const isMale = o.type === 'v-carve-inlay' && o.vCarveInlay?.mode === 'male-plug';
             const startDepth = isMale ? (o.vCarveInlay?.startDepth || 0) : 0;
-            
-            // For male plug, we cut OUTSIDE the line. For female, we cut INSIDE.
-            // Negative distance shrinks (inside), positive expands (outside).
             const dir = isMale ? 1 : -1;
             const initialOffset = startDepth > 0 ? dir * (startDepth * Math.tan((angle / 2) * Math.PI / 180)) : dir * 0.1;
             let cur = initialOffset;
             const step = Math.max(0.00001, t.metricDiameter * (t.stepover / 100));
-            
             for (let p = 0; p < 50; p++) {
                 const op = this.offsetPath(f.points, cur)[0];
                 let minX = Infinity, maxX = -Infinity; op.forEach(pt => { minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x); });
                 if (maxX - minX < 0.1 || op.length < 3) break;
-                
-                // Depth calculation
                 let depth = Math.min(Math.abs(cur) / Math.tan((angle / 2) * Math.PI / 180), flatDepth);
-                if (startDepth > 0 && depth < startDepth) depth = startDepth; // Don't cut above startDepth for plugs
-                
+                if (startDepth > 0 && depth < startDepth) depth = startDepth;
                 vPaths.push(op.map(pt => ({ ...pt, z: -depth })));
                 cur += (dir * step);
             }
@@ -514,56 +489,31 @@ export default class GCodeGenerator {
             const offset = (t.metricDiameter / 2) + (o.dogbones.toolDiameterOffset || 0.1);
             paths = paths.map(path => {
                 const newPath = [];
-                
-                // Determine winding order
                 let area = 0;
                 for (let i = 0; i < path.length; i++) {
                     const p1 = path[i], p2 = path[(i + 1) % path.length];
                     area += (p2.x - p1.x) * (p2.y + p1.y);
                 }
                 const isClockwise = area > 0;
-                
                 for (let i = 0; i < path.length; i++) {
                     const p1 = path[(i - 1 + path.length) % path.length], p2 = path[i], p3 = path[(i + 1) % path.length];
                     newPath.push(p2);
-                    
-                    // Cross product to determine angle direction
                     const cross = (p2.x - p1.x) * (p3.y - p2.y) - (p2.y - p1.y) * (p3.x - p2.x);
-                    
-                    // For an inside cut, an internal corner has a specific cross product sign based on winding
                     const isInternalCorner = isClockwise ? cross < -0.01 : cross > 0.01;
                     const isExternalCorner = isClockwise ? cross > 0.01 : cross < -0.01;
-                    
-                    // Dogbones are needed on internal corners for inside cuts, and external corners for outside cuts
                     const needsDogbone = (o.type === 'inside' && isInternalCorner) || (o.type === 'outside' && isExternalCorner);
-                    
                     if (needsDogbone) {
-                        // Vector from p2 to p1
                         const v1x = p1.x - p2.x, v1y = p1.y - p2.y, l1 = Math.hypot(v1x, v1y) || 1;
-                        // Vector from p2 to p3
                         const v2x = p3.x - p2.x, v2y = p3.y - p2.y, l2 = Math.hypot(v2x, v2y) || 1;
-                        
-                        // Normalized vectors
-                        const n1x = v1x/l1, n1y = v1y/l1;
-                        const n2x = v2x/l2, n2y = v2y/l2;
-                        
+                        const n1x = v1x/l1, n1y = v1y/l1, n2x = v2x/l2, n2y = v2y/l2;
                         if (o.dogbones.type === 'dogbone') {
-                            // Bisector vector (points directly into the corner)
-                            const bx = n1x + n2x, by = n1y + n2y;
-                            const bl = Math.hypot(bx, by) || 1;
-                            
-                            // Dogbone direction is opposite to the bisector (pointing OUT of the shape for inside cut)
-                            // Since path is already offset, we push the tool further into the corner
+                            const bx = n1x + n2x, by = n1y + n2y, bl = Math.hypot(bx, by) || 1;
                             const dirX = o.type === 'inside' ? -bx/bl : bx/bl;
                             const dirY = o.type === 'inside' ? -by/bl : by/bl;
-                            
                             newPath.push({ x: p2.x + dirX * offset, y: p2.y + dirY * offset });
                             newPath.push(p2);
                         } else if (o.dogbones.type === 't-bone') {
-                            // T-Bone pushes along one of the edges
-                            const dirX = o.type === 'inside' ? -n1x : n1x;
-                            const dirY = o.type === 'inside' ? -n1y : n1y;
-                            
+                            const dirX = o.type === 'inside' ? -n1x : n1x, dirY = o.type === 'inside' ? -n1y : n1y;
                             newPath.push({ x: p2.x + dirX * offset, y: p2.y + dirY * offset });
                             newPath.push(p2);
                         }
@@ -572,13 +522,11 @@ export default class GCodeGenerator {
                 return newPath;
             });
         }
-
         return paths;
     }
 
-    generateRasterPath(points: {x: number, y: number, z?: number}[], tool: CAMTool, feature?: CAMFeature, option?: CAMPathingOption): {x: number, y: number, z?: number}[][] {
+    private generateRasterPath(points: {x: number, y: number, z?: number}[], tool: CAMTool, feature?: CAMFeature, option?: CAMPathingOption): {x: number, y: number, z?: number}[][] {
         const { rasterResolution, millingSide, threeDAlignment = 'top', threeDZOffset = 0, stockThickness, customResolutionValue } = this.settings;
-        
         if (!feature || !feature.meshVertices || feature.meshVertices.length === 0) {
             let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
             points.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
@@ -591,7 +539,6 @@ export default class GCodeGenerator {
             }
             return [path];
         }
-
         const vertices = feature.meshVertices;
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
         for (let i = 0; i < vertices.length; i += 3) {
@@ -599,27 +546,13 @@ export default class GCodeGenerator {
             if (millingSide === 'bottom') { x = -x; z = -z; }
             minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
         }
-
         let res = Math.max(0.00001, tool.metricDiameter / 10);
         if (rasterResolution === 'standard') res = 0.5;
         if (rasterResolution === 'high') res = 0.1;
         if (rasterResolution === 'custom') res = Math.max(0.05, customResolutionValue || 0.1);
-
-        // Apply boundary if selected
-        let bMinX = minX, bMaxX = maxX, bMinY = minY, bMaxY = maxY;
-        if (option?.threeDBoundaryId) {
-            const boundaryFeature = this.features.find(f => f.id === option.threeDBoundaryId);
-            if (boundaryFeature) {
-                bMinX = Infinity; bMaxX = -Infinity; bMinY = Infinity; bMaxY = -Infinity;
-                boundaryFeature.points.forEach(p => { bMinX = Math.min(bMinX, p.x); bMaxX = Math.max(bMaxX, p.x); bMinY = Math.min(bMinY, p.y); bMaxY = Math.max(bMaxY, p.y); });
-                minX = Math.max(minX, bMinX); maxX = Math.min(maxX, bMaxX); minY = Math.max(minY, bMinY); maxY = Math.min(maxY, bMaxY);
-            }
-        }
-
         const cols = Math.ceil((maxX - minX) / res) + 1, rows = Math.ceil((maxY - minY) / res) + 1;
         const zBuffer = new Float32Array(cols * rows).fill(minZ - 10);
         const getGC = (x: number, y: number) => ({ c: Math.floor((x - minX) / res), r: Math.floor((y - minY) / res) });
-
         for (let i = 0; i < vertices.length; i += 9) {
             let v0x = vertices[i], v0y = vertices[i+1], v0z = vertices[i+2], v1x = vertices[i+3], v1y = vertices[i+4], v1z = vertices[i+5], v2x = vertices[i+6], v2y = vertices[i+7], v2z = vertices[i+8];
             if (millingSide === 'bottom') { v0x = -v0x; v0z = -v0z; v1x = -v1x; v1z = -v1z; v2x = -v2x; v2z = -v2z; }
@@ -635,7 +568,6 @@ export default class GCodeGenerator {
                 }
             }
         }
-
         const comp = new Float32Array(zBuffer.length);
         const tR = tool.metricDiameter / 2, tRC = Math.ceil(tR / res), kernel = [];
         for (let dr = -tRC; dr <= tRC; dr++) {
@@ -644,10 +576,7 @@ export default class GCodeGenerator {
                 if (dist <= tR) {
                     let dz = 0;
                     if (tool.type === 'Ballnose') dz = Math.sqrt(tR * tR - dist * dist) - tR;
-                    else if (tool.type === 'V-Bit') {
-                        const angle = tool.angle || 60;
-                        dz = dist * Math.tan((90 - (angle / 2)) * Math.PI / 180) - tR;
-                    }
+                    else if (tool.type === 'V-Bit') dz = dist * Math.tan((90 - ((tool.angle || 60) / 2)) * Math.PI / 180) - tR;
                     kernel.push({ dc, dr, dz });
                 }
             }
@@ -665,287 +594,85 @@ export default class GCodeGenerator {
                 comp[r * cols + c] = maxZ_val;
             }
         }
-
-        // 3D Holding Tabs
-        if (option?.threeDTabs?.enabled) {
-            const tw = option.threeDTabs.width, th = option.threeDTabs.height;
-            const mx = (maxX + minX) / 2, my = (maxY + minY) / 2;
-            const positions = [
-                { x: minX, y: my, dx: tw, dy: tw },
-                { x: maxX, y: my, dx: tw, dy: tw },
-                { x: mx, y: minY, dx: tw, dy: tw },
-                { x: mx, y: maxY, dx: tw, dy: tw },
-            ];
-            positions.forEach(pos => {
-                const sR = Math.max(0, getGC(pos.x - pos.dx, pos.y - pos.dy).r);
-                const eR = Math.min(rows - 1, getGC(pos.x + pos.dx, pos.y + pos.dy).r);
-                const sC = Math.max(0, getGC(pos.x - pos.dx, pos.y - pos.dy).c);
-                const eC = Math.min(cols - 1, getGC(pos.x + pos.dx, pos.y + pos.dy).c);
-                for (let r = sR; r <= eR; r++) {
-                    for (let c = sC; c <= eC; c++) {
-                        const idx = r * cols + c;
-                        const tabZ = minZ + th;
-                        if (comp[idx] < tabZ) comp[idx] = tabZ;
-                    }
-                }
-            });
-        }
-
-        // Rest Machining (Pencil Milling) Logic
-        let prevComp: Float32Array | null = null;
-        if (option?.threeDRestMachining?.enabled) {
-            const prevTool = [...DEFAULT_TOOLS, ...this.tools].find(t => t.id === option.threeDRestMachining!.previousToolId);
-            if (prevTool) {
-                prevComp = new Float32Array(zBuffer.length);
-                const pR = prevTool.metricDiameter / 2, pRC = Math.ceil(pR / res), pKernel = [];
-                for (let dr = -pRC; dr <= pRC; dr++) {
-                    for (let dc = -pRC; dc <= pRC; dc++) {
-                        const dist = Math.hypot(dc * res, dr * res);
-                        if (dist <= pR) {
-                            let dz = 0;
-                            if (prevTool.type === 'Ballnose') dz = Math.sqrt(pR * pR - dist * dist) - pR;
-                            else if (prevTool.type === 'V-Bit') dz = dist * Math.tan((90 - ((prevTool.angle || 60) / 2)) * Math.PI / 180) - pR;
-                            pKernel.push({ dc, dr, dz });
-                        }
-                    }
-                }
-                for (let r = 0; r < rows; r++) {
-                    for (let c = 0; c < cols; c++) {
-                        let maxZ_val = minZ - 10;
-                        for (const k of pKernel) {
-                            const kr = r + k.dr, kc = c + k.dc;
-                            if (kr >= 0 && kr < rows && kc >= 0 && kc < cols) {
-                                const sz = zBuffer[kr * cols + kc] - k.dz;
-                                if (sz > maxZ_val) maxZ_val = sz;
-                            }
-                        }
-                        prevComp[r * cols + c] = maxZ_val;
-                    }
-                }
-            }
-        }
-
-        // Apply Global Z-Alignment and Offset
         const modelHeight = maxZ - minZ;
         let alignmentOffsetZ = 0;
-        if (threeDAlignment === 'top') {
-            alignmentOffsetZ = -maxZ; // normalize top to 0
-        } else if (threeDAlignment === 'center') {
-            alignmentOffsetZ = -maxZ + (modelHeight / 2) - (stockThickness / 2);
-        } else if (threeDAlignment === 'bottom') {
-            alignmentOffsetZ = -minZ - stockThickness;
-        }
+        if (threeDAlignment === 'top') alignmentOffsetZ = -maxZ;
+        else if (threeDAlignment === 'center') alignmentOffsetZ = -maxZ + (modelHeight / 2) - (stockThickness / 2);
+        else if (threeDAlignment === 'bottom') alignmentOffsetZ = -minZ - stockThickness;
         alignmentOffsetZ -= threeDZOffset;
-
-        const generateRaster = (isY: boolean) => {
-            const step = Math.max(res, tool.metricDiameter * (tool.stepover / 100));
-            const path = []; 
-            let primary = isY ? minX : minY, maxPrimary = isY ? maxX : maxY, goingRight = true;
-            
-            while (primary <= maxPrimary) {
-                const lp = [];
-                let secondary = isY ? minY : minX, maxSecondary = isY ? maxY : maxX;
-                
-                while (secondary <= maxSecondary) {
-                    const cx = isY ? primary : secondary;
-                    const cy = isY ? secondary : primary;
-                    const r = Math.min(rows - 1, Math.max(0, Math.floor((cy - minY) / res)));
-                    const c = Math.min(cols - 1, Math.max(0, Math.floor((cx - minX) / res)));
-                    const idx = r * cols + c;
-                    
-                    let rawZ = comp[idx];
-                    if (rawZ <= minZ - 9) rawZ = minZ; // Default to bottom if out of bounds
-                    
-                    // Rest machining filter: skip if current tool can't go significantly deeper than prev tool
-                    if (prevComp) {
-                        let prevRawZ = prevComp[idx];
-                        if (prevRawZ <= minZ - 9) prevRawZ = minZ;
-                        if (Math.abs(prevRawZ - rawZ) < 0.1) {
-                            secondary += res;
-                            continue;
-                        }
-                    }
-
-                    const adjustedZ = rawZ + alignmentOffsetZ;
-
-                    lp.push({ x: cx, y: cy, z: adjustedZ });
-                    secondary += res;
-                }
-                if (lp.length > 0) {
-                    if (!goingRight) lp.reverse();
-                    path.push(...lp);
-                }
-                goingRight = !goingRight;
-                primary += step;
+        const step = Math.max(res, tool.metricDiameter * (tool.stepover / 100));
+        const path = []; let py = minY, goingRight = true;
+        while (py <= maxY) {
+            const lp = []; let px = minX;
+            while (px <= maxX) {
+                const r = Math.min(rows - 1, Math.max(0, Math.floor((py - minY) / res))), c = Math.min(cols - 1, Math.max(0, Math.floor((px - minX) / res)));
+                const rawZ = comp[r * cols + c];
+                lp.push({ x: px, y: py, z: (rawZ <= minZ - 9 ? minZ : rawZ) + alignmentOffsetZ });
+                px += res;
             }
-            return path;
-        };
-
-        const strategy = option?.threeDStrategy || 'raster-x';
-        const finalPaths = [];
-
-        // 3D Roughing Pass Logic
-        if (option?.threeDRoughing?.enabled) {
-            const roughTool = [...DEFAULT_TOOLS, ...this.tools].find(t => t.id === option.threeDRoughing!.toolId) || tool;
-            const roughStepdown = Math.max(0.00001, option.threeDRoughing.stepdown);
-            let currentDepth = -roughStepdown;
-            const targetMinZ = minZ + alignmentOffsetZ;
-            
-            while (currentDepth > targetMinZ) {
-                const roughStep = Math.max(res, roughTool.metricDiameter * (roughTool.stepover / 100));
-                const rPath = []; let y = minY, goingRight = true;
-                while (y <= maxY) {
-                    const r = Math.min(rows - 1, Math.max(0, Math.floor((y - minY) / res))), lp = []; let x = minX;
-                    while (x <= maxX) {
-                        let rawZ = comp[r * cols + Math.min(cols - 1, Math.max(0, Math.floor((x - minX) / res)))];
-                        let adjustedZ = rawZ + alignmentOffsetZ + option.threeDRoughing.stockToLeave;
-                        if (adjustedZ > currentDepth) adjustedZ = currentDepth; // Slice at currentDepth
-                        if (adjustedZ <= currentDepth) lp.push({ x, y, z: adjustedZ });
-                        x += res;
-                    }
-                    if (lp.length > 0) {
-                        if (!goingRight) lp.reverse(); rPath.push(...lp);
-                    }
-                    goingRight = !goingRight; y += roughStep;
-                }
-                if (rPath.length > 0) finalPaths.push(rPath);
-                currentDepth -= roughStepdown;
-            }
+            if (lp.length > 0) { if (!goingRight) lp.reverse(); path.push(...lp); }
+            goingRight = !goingRight; py += step;
         }
-
-        // Finishing Pass
-        if (strategy === 'raster-x') finalPaths.push(generateRaster(false));
-        else if (strategy === 'raster-y') finalPaths.push(generateRaster(true));
-        else if (strategy === 'cross-hatch') {
-            finalPaths.push(generateRaster(false));
-            finalPaths.push(generateRaster(true));
-        }
-
-        return finalPaths;
+        return [path];
     }
 
-    offsetPath(pts: {x: number, y: number, z?: number}[], dist: number) {
+    private offsetPath(pts: {x: number, y: number, z?: number}[], dist: number) {
         if (!pts || pts.length < 3) return [pts || []];
-        
         let area = 0;
         for (let i = 0; i < pts.length; i++) {
             const p1 = pts[i], p2 = pts[(i + 1) % pts.length];
             area += (p2.x - p1.x) * (p2.y + p1.y);
         }
         const isClockwise = area > 0;
-        
         const res = [];
         for (let i = 0; i < pts.length; i++) {
             const p = pts[(i - 1 + pts.length) % pts.length], c = pts[i], n = pts[(i + 1) % pts.length];
             const dx1 = c.x - p.x, dy1 = c.y - p.y, dx2 = n.x - c.x, dy2 = n.y - c.y;
             const l1 = Math.hypot(dx1, dy1) || 1, l2 = Math.hypot(dx2, dy2) || 1;
-            
             let nx1, ny1, nx2, ny2;
-            if (isClockwise) {
-                // Outward normal for CW is left normal (-dy, dx)
-                nx1 = -dy1 / l1; ny1 = dx1 / l1;
-                nx2 = -dy2 / l2; ny2 = dx2 / l2;
-            } else {
-                // Outward normal for CCW is right normal (dy, -dx)
-                nx1 = dy1 / l1; ny1 = -dx1 / l1;
-                nx2 = dy2 / l2; ny2 = -dx2 / l2;
-            }
-            
-            const nx = (nx1 + nx2) / 2, ny = (ny1 + ny2) / 2;
-            const lSq = nx * nx + ny * ny;
-            const l = Math.sqrt(lSq) || 0.0001;
-            
-            // Limit miter to prevent massive spikes on sharp inner corners
+            if (isClockwise) { nx1 = -dy1 / l1; ny1 = dx1 / l1; nx2 = -dy2 / l2; ny2 = dx2 / l2; }
+            else { nx1 = dy1 / l1; ny1 = -dx1 / l1; nx2 = dy2 / l2; ny2 = -dx2 / l2; }
+            const nx = (nx1 + nx2) / 2, ny = (ny1 + ny2) / 2, l = Math.sqrt(nx * nx + ny * ny) || 0.0001;
             const miterDist = Math.min(Math.abs(dist / l), Math.abs(dist) * 5) * Math.sign(dist);
-            
             res.push({ x: c.x + (nx / l) * miterDist, y: c.y + (ny / l) * miterDist, z: c.z });
         }
         return [res];
     }
 
-    generatePocketToolpaths(pts: {x: number, y: number, z?: number}[], tool: CAMTool, featureType: string) {
+    private generatePocketToolpaths(pts: {x: number, y: number, z?: number}[], tool: CAMTool, featureType: string) {
         if (!pts || pts.length === 0) return [];
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         pts.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
-        
-        const toolRadius = tool.metricDiameter / 2;
-        const step = Math.max(0.00001, tool.metricDiameter * (tool.stepover / 100));
-        
-        // --- RECTANGULAR ZIG-ZAG (For Surfacing and Boxes) ---
+        const toolRadius = tool.metricDiameter / 2, step = Math.max(0.00001, tool.metricDiameter * (tool.stepover / 100));
         if (featureType === 'rectangle') {
-            const startX = minX + toolRadius;
-            const endX = maxX - toolRadius;
-            const startY = minY + toolRadius;
-            const endY = maxY - toolRadius;
-
-            if (endX < startX || endY < startY) {
-                return [[{x: (minX + maxX) / 2, y: (minY + maxY) / 2}]];
-            }
-
-            const paths = [];
-            const zigZagPath = [];
-            let curY = startY;
-            let goingRight = true;
-
+            const startX = minX + toolRadius, endX = maxX - toolRadius, startY = minY + toolRadius, endY = maxY - toolRadius;
+            if (endX < startX || endY < startY) return [[{x: (minX + maxX) / 2, y: (minY + maxY) / 2}]];
+            const paths = [], zigZagPath = []; let curY = startY, goingRight = true;
             while (curY <= endY) {
-                if (goingRight) {
-                    zigZagPath.push({ x: startX, y: curY });
-                    zigZagPath.push({ x: endX, y: curY });
-                } else {
-                    zigZagPath.push({ x: endX, y: curY });
-                    zigZagPath.push({ x: startX, y: curY });
-                }
-                
-                if (curY < endY && curY + step > endY) {
-                    curY = endY;
-                } else {
-                    curY += step;
-                }
+                if (goingRight) { zigZagPath.push({ x: startX, y: curY }); zigZagPath.push({ x: endX, y: curY }); }
+                else { zigZagPath.push({ x: endX, y: curY }); zigZagPath.push({ x: startX, y: curY }); }
+                curY = (curY < endY && curY + step > endY) ? endY : curY + step;
                 goingRight = !goingRight;
             }
-            paths.push(zigZagPath);
-            return paths;
+            paths.push(zigZagPath); return paths;
         }
-        
-        // --- CONCENTRIC OFFSET (For arbitrary shapes, circles, etc) ---
-        const paths = []; 
-        let cur = -toolRadius; 
-        
+        const paths = []; let cur = -toolRadius; 
         for (let p = 0; p < 100; p++) {
             const op = this.offsetPath(pts, cur)[0];
             let oMinX = Infinity, oMaxX = -Infinity, oMinY = Infinity, oMaxY = -Infinity; 
-            op.forEach(pt => { 
-                oMinX = Math.min(oMinX, pt.x); oMaxX = Math.max(oMaxX, pt.x); 
-                oMinY = Math.min(oMinY, pt.y); oMaxY = Math.max(oMaxY, pt.y); 
-            });
-            
-            // Break if the remaining area is smaller than the tool diameter
-            if ((oMaxX - oMinX) < tool.metricDiameter && (oMaxY - oMinY) < tool.metricDiameter) {
-                // Push one final center pass to clear the very middle if it's a tight squeeze
-                if (op.length > 0) paths.push(op);
-                break;
-            }
-            
-            // Detect if the polygon collapsed on itself (area inverted)
+            op.forEach(pt => { oMinX = Math.min(oMinX, pt.x); oMaxX = Math.max(oMaxX, pt.x); oMinY = Math.min(oMinY, pt.y); oMaxY = Math.max(oMaxY, pt.y); });
+            if ((oMaxX - oMinX) < tool.metricDiameter && (oMaxY - oMinY) < tool.metricDiameter) { if (op.length > 0) paths.push(op); break; }
             let area = 0;
-            for (let i = 0; i < op.length; i++) {
-                const p1 = op[i], p2 = op[(i + 1) % op.length];
-                area += (p2.x - p1.x) * (p2.y + p1.y);
-            }
-            // An inward offset of a CW polygon (area > 0) should remain CW. 
-            // If it becomes CCW (area < 0), it collapsed.
+            for (let i = 0; i < op.length; i++) { const p1 = op[i], p2 = op[(i + 1) % op.length]; area += (p2.x - p1.x) * (p2.y + p1.y); }
             if (area <= 0) break;
-
-            paths.push(op); 
-            cur -= step;
+            paths.push(op); cur -= step;
         }
-        
-        return paths.reverse(); // Cut from inside out
+        return paths.reverse();
     }
 
-    calculateCenter(pts: {x: number, y: number}[]) { 
+    private calculateCenter(pts: {x: number, y: number}[]) { 
         if (!pts || pts.length === 0) return { x: 0, y: 0 };
         let sx = 0, sy = 0; pts.forEach(p => { sx += p.x; sy += p.y; }); return { x: sx / pts.length, y: sy / pts.length }; 
     }
-    calculateRadius(pts: {x: number, y: number}[], c: {x: number, y: number}) { return pts.length ? Math.hypot(pts[0].x - c.x, pts[0].y - c.y) : 0; }
+    private calculateRadius(pts: {x: number, y: number}[], c: {x: number, y: number}) { return pts.length ? Math.hypot(pts[0].x - c.x, pts[0].y - c.y) : 0; }
 }

@@ -9,6 +9,7 @@ import console from './slices/console.slice';
 import helper from './slices/helper.slice';
 import gSenderInfo from './slices/gSenderInfo.slice.ts';
 import shortcuts from './slices/shortcuts.slice.ts';
+import cam from './slices/cam.slice';
 import { sagaMiddleware } from './sagas';
 
 export const store = configureStore({
@@ -22,6 +23,7 @@ export const store = configureStore({
         helper,
         gSenderInfo,
         shortcuts,
+        cam,
     },
     middleware: (getDefaultMiddleware) =>
         getDefaultMiddleware().concat(sagaMiddleware),

@@ -2,8 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import pubsub from 'pubsub-js';
 import cx from 'classnames';
-import { cloneDeep } from 'lodash';
-import { v4 as uuid } from 'uuid';
 import { Button } from '../../components/Button';
 import Tabs from '../../components/Tabs';
 import { uploadGcodeFileToServer } from '../../lib/fileupload';
@@ -24,28 +22,16 @@ import CAMAccessibility from './utils/CAMAccessibility';
 import { saveAsDialog } from '../../lib/file-save';
 import useKeybinding from '../../lib/useKeybinding';
 import { toast } from '../../lib/toaster';
-import { FolderOpen, Save, AlertTriangle, RefreshCcw, Undo2, Redo2, MessageSquareText, FileText, Wand2, HelpCircle, Keyboard, Clock } from 'lucide-react';
+import { FolderOpen, Save, AlertTriangle, RefreshCcw, Undo2, Redo2, MessageSquareText, FileText, Wand2 } from 'lucide-react';
 import SafetyChecklist from './components/SafetyChecklist';
 import ParametricWizards from './components/ParametricWizards';
 import NestingEngine from './utils/NestingEngine';
 import GCodeEditor from './components/GCodeEditor';
 
-import { useDispatch } from 'react-redux';
-import { useTypedSelector } from '../../hooks/useTypedSelector';
-import * as camActions from '../../store/redux/slices/cam.slice';
-import CAMErrorBoundary from './components/CAMErrorBoundary';
-
 const CAM = () => {
     const navigate = useNavigate();
-    const dispatch = useDispatch();
-    
-    // Redux State
-    const { 
-        features, settings, tools, pathingOptions, gcode, originalGcode, estimatedTime, historyIdx, history 
-    } = useTypedSelector(state => state.cam);
-    const machineSettings = useTypedSelector(state => state.controller.settings?.settings);
-
     const [file, setFile] = useState<File | null>(null);
+    const [features, setFeatures] = useState<CAMFeature[]>([]);
     const [isWizardMode, setIsWizardMode] = useState(false);
     const [hasError, setHasError] = useState(false);
     const [errorMsg, setHasErrorMsg] = useState('');
@@ -53,40 +39,88 @@ const CAM = () => {
     const [showNarrative, setShowNarrative] = useState(false);
     const [showEditor, setShowEditor] = useState(false);
     const [showWizards, setShowWizards] = useState(false);
-    const [showHelp, setShowHelp] = useState(false);
-    const [showShortcuts, setShowShortcuts] = useState(false);
     const projectInputRef = useRef<HTMLInputElement>(null);
     
     const featurePanelRef = useRef<HTMLElement>(null);
     const visualizerPanelRef = useRef<HTMLElement>(null);
     const settingsPanelRef = useRef<HTMLElement>(null);
 
+    const [settings, setSettings] = useState<CAMSettings>({
+        units: store.get('workspace.units', 'mm'),
+        zOrigin: 'top',
+        millingSide: 'top',
+        scalingType: 'percentage',
+        rasterResolution: 'adaptive',
+        customResolutionValue: 0.1,
+        optimizePath: true,
+        scalePercentage: 100,
+        targetWidth: 0,
+        targetHeight: 0,
+        safeZ: 5,
+        spindle: 'M3',
+        mist: false,
+        flood: false,
+        stockWidth: 100,
+        stockLength: 100,
+        stockThickness: 10,
+        nestingX: 1,
+        nestingY: 1,
+        nestingSpacing: 5,
+        startGcode: '',
+        endGcode: '',
+        showSafetyChecklist: true
+    });
+    
+    const [tools, setTools] = useState<CAMTool[]>([]);
+    const [pathingOptions, setPathingOptions] = useState<CAMPathingOption[]>([]);
     const [focusedFeatureIdx, setFocusedFeatureIdx] = useState(-1);
-    const [designBounds, setDesignBounds] = useState<{ width: number; height: number } | undefined>();
-    const [isGenerating, setIsGenerating] = useState(false);
 
-    const pushToHistory = () => {
-        dispatch(camActions.pushToHistory());
+    // History for Undo/Redo
+    const [history, setHistory] = useState<{ options: CAMPathingOption[], settings: CAMSettings, features: CAMFeature[] }[]>([]);
+    const [historyIdx, setHistoryIdx] = useState(-1);
+
+    const pushToHistory = (opts: CAMPathingOption[], sett: CAMSettings, feats: CAMFeature[]) => {
+        const newHistory = history.slice(0, historyIdx + 1);
+        newHistory.push({ 
+            options: JSON.parse(JSON.stringify(opts)), 
+            settings: JSON.parse(JSON.stringify(sett)),
+            features: JSON.parse(JSON.stringify(feats))
+        });
+        if (newHistory.length > 50) newHistory.shift();
+        setHistory(newHistory);
+        setHistoryIdx(newHistory.length - 1);
     };
 
     const handleUndo = () => {
-        dispatch(camActions.undo());
-        toast.info("Undo successful");
+        if (historyIdx > 0) {
+            const prev = history[historyIdx - 1];
+            setPathingOptions(prev.options);
+            setSettings(prev.settings);
+            setFeatures(prev.features);
+            setHistoryIdx(historyIdx - 1);
+            toast.info("Undo successful");
+        }
     };
 
     const handleRedo = () => {
-        dispatch(camActions.redo());
-        toast.info("Redo successful");
+        if (historyIdx < history.length - 1) {
+            const next = history[historyIdx + 1];
+            setPathingOptions(next.options);
+            setSettings(next.settings);
+            setFeatures(next.features);
+            setHistoryIdx(historyIdx + 1);
+            toast.info("Redo successful");
+        }
     };
 
     const updateSettings = (newSettings: CAMSettings) => {
-        dispatch(camActions.setSettings(newSettings));
-        pushToHistory();
+        setSettings(newSettings);
+        pushToHistory(pathingOptions, newSettings, features);
     };
 
     const updatePathing = (newOptions: CAMPathingOption[]) => {
-        dispatch(camActions.setPathingOptions(newOptions));
-        pushToHistory();
+        setPathingOptions(newOptions);
+        pushToHistory(newOptions, settings, features);
     };
 
     const playAudioAlert = (type: 'success' | 'warning' | 'error') => {
@@ -118,8 +152,8 @@ const CAM = () => {
         const token = pubsub.subscribe('cam:optimize-layout', () => {
             if (features.length === 0) return;
             const optimized = NestingEngine.optimize(features, settings, pathingOptions, tools);
-            dispatch(camActions.setFeatures(optimized));
-            pushToHistory();
+            setFeatures(optimized);
+            pushToHistory(pathingOptions, settings, optimized);
             toast.success("Layout optimized for material yield.");
             CAMAccessibility.announce("Layout optimized. Shapes have been packed tightly.");
         });
@@ -127,29 +161,27 @@ const CAM = () => {
     }, [features, settings, pathingOptions, tools]);
 
     useEffect(() => {
-        if (tools.length === 0) {
-            const storeTools = store.get('workspace.tools', []);
-            const camTools: CAMTool[] = storeTools.map((t: Partial<CAMTool>, index: number) => ({
-                id: t.id || `custom-${index}`,
-                name: t.name || `Tool ${t.metricDiameter || 0}mm`,
-                type: t.type || 'Endmill',
-                metricDiameter: t.metricDiameter || 3.175,
-                imperialDiameter: t.imperialDiameter || 0.125,
-                flutes: t.flutes || 2,
-                stepover: t.stepover || 40,
-                stepdown: t.stepdown || 1.5,
-                feedrate: t.feedrate || 1000,
-                plungeRate: t.plungeRate || 300,
-                spindleRPM: t.spindleRPM || 18000,
-                toolLength: t.toolLength || 30,
-                angle: t.angle || 0
-            }));
-            dispatch(camActions.setTools(camTools));
-        }
+        const storeTools = store.get('workspace.tools', []);
+        const camTools: CAMTool[] = storeTools.map((t: Partial<CAMTool>, index: number) => ({
+            id: t.id || `custom-${index}`,
+            name: t.name || `Tool ${t.metricDiameter || 0}mm`,
+            type: t.type || 'Endmill',
+            metricDiameter: t.metricDiameter || 3.175,
+            imperialDiameter: t.imperialDiameter || 0.125,
+            flutes: t.flutes || 2,
+            stepover: t.stepover || 40,
+            stepdown: t.stepdown || 1.5,
+            feedrate: t.feedrate || 1000,
+            plungeRate: t.plungeRate || 300,
+            spindleRPM: t.spindleRPM || 18000,
+            toolLength: t.toolLength || 30,
+            angle: t.angle || 0
+        }));
+        setTools(camTools);
     }, []);
 
     const handleToolsChange = (newTools: CAMTool[]) => {
-        dispatch(camActions.setTools(newTools));
+        setTools(newTools);
         store.set('workspace.tools', newTools);
     };
 
@@ -157,26 +189,33 @@ const CAM = () => {
     useEffect(() => {
         if (prevUnits.current !== settings.units) {
             const factor = settings.units === 'mm' ? 25.4 : 1 / 25.4;
-            dispatch(camActions.setSettings({
-                ...settings,
-                stockWidth: settings.stockWidth * factor,
-                stockLength: settings.stockLength * factor,
-                stockThickness: settings.stockThickness * factor,
-                nestingSpacing: settings.nestingSpacing * factor,
-                safeZ: settings.safeZ * factor,
-                targetWidth: settings.targetWidth * factor,
-                targetHeight: settings.targetHeight * factor,
+            setSettings(prev => ({
+                ...prev,
+                stockWidth: prev.stockWidth * factor,
+                stockLength: prev.stockLength * factor,
+                stockThickness: prev.stockThickness * factor,
+                nestingSpacing: prev.nestingSpacing * factor,
+                safeZ: prev.safeZ * factor,
+                targetWidth: prev.targetWidth * factor,
+                targetHeight: prev.targetHeight * factor,
             }));
+            // Tools are absolute (metricDiameter is always mm, imperial is always in). 
+            // We only scale feedrates which depend on the unit system.
             const scaledTools = tools.map(t => ({
                 ...t,
                 feedrate: t.feedrate * factor,
                 plungeRate: t.plungeRate * factor,
             }));
-            dispatch(camActions.setTools(scaledTools));
+            setTools(scaledTools);
             prevUnits.current = settings.units;
             CAMAccessibility.announce(`Converted values to ${settings.units === 'mm' ? 'Metric' : 'Imperial'}.`);
         }
     }, [settings.units]);
+
+    const [gcode, setGcode] = useState('');
+    const [originalGcode, setOriginalGcode] = useState('');
+    const [isGenerating, setIsGenerating] = useState(false);
+    const [designBounds, setDesignBounds] = useState<{ width: number; height: number } | undefined>();
 
     useEffect(() => {
         if (features.length > 0 && !gcode) {
@@ -250,14 +289,14 @@ const CAM = () => {
         CAM_TOGGLE_FEATURE: { title: 'Toggle Selection', keys: 'space', cmd: 'CAM_TOGGLE_FEATURE', preventDefault: true, isActive: true, category: CAM_CATEGORY, callback: () => {
             if (focusedFeatureIdx >= 0 && features[focusedFeatureIdx]) {
                 const id = features[focusedFeatureIdx].id;
-                dispatch(camActions.setFeatures(features.map(f => f.id === id ? { ...f, selected: !f.selected } : f)));
+                setFeatures(features.map(f => f.id === id ? { ...f, selected: !f.selected } : f));
             }
         }},
         CAM_FOCUS_VISUALIZER: { title: 'Focus Visualizer', keys: 'ctrl+2', cmd: 'CAM_FOCUS_VISUALIZER', preventDefault: true, isActive: true, category: CAM_CATEGORY, callback: () => visualizerPanelRef.current?.focus() },
         CAM_FOCUS_SETTINGS: { title: 'Focus Settings', keys: 'ctrl+3', cmd: 'CAM_FOCUS_SETTINGS', preventDefault: true, isActive: true, category: CAM_CATEGORY, callback: () => settingsPanelRef.current?.focus() },
         CAM_GENERATE_GCODE: { title: 'Generate', keys: 'alt+g', cmd: 'CAM_GENERATE_GCODE', preventDefault: true, isActive: true, category: CAM_CATEGORY, callback: () => handleGenerateRequest() },
         CAM_LOAD_TO_SENDER: { title: 'Load', keys: 'alt+l', cmd: 'CAM_LOAD_TO_SENDER', preventDefault: true, isActive: true, category: CAM_CATEGORY, callback: () => handleLoadToSender() },
-        CAM_RESET_SESSION: { title: 'Reset', keys: 'alt+r', cmd: 'CAM_RESET_SESSION', preventDefault: true, isActive: true, category: CAM_CATEGORY, callback: () => handleReset() },
+        CAM_RESET_SESSION: { title: 'Reset', keys: 'alt+r', cmd: 'CAM_RESET_SESSION', preventDefault: true, isActive: true, category: CAM_CATEGORY, callback: () => { setFile(null); setFeatures([]); setGcode(''); setHasError(false); } },
         CAM_UNDO: { title: 'Undo', keys: 'ctrl+z', cmd: 'CAM_UNDO', preventDefault: true, isActive: true, category: CAM_CATEGORY, callback: () => handleUndo() },
         CAM_REDO: { title: 'Redo', keys: 'ctrl+y', cmd: 'CAM_REDO', preventDefault: true, isActive: true, category: CAM_CATEGORY, callback: () => handleRedo() },
         CAM_GCODE_UPDATE: {
@@ -285,6 +324,7 @@ const CAM = () => {
     }), [features, pathingOptions, settings, tools, gcode, historyIdx, focusedFeatureIdx, showEditor]);
 
     useEffect(() => {
+        // Register keybindings once component is mounted to avoid render-phase store updates
         useKeybinding(shuttleControlEvents);
     }, [shuttleControlEvents]);
 
@@ -300,7 +340,7 @@ const CAM = () => {
             else if (fileName.endsWith('.stl')) extractedFeatures = await FileParser.parseSTL(selectedFile);
             else if (fileName.endsWith('.step') || fileName.endsWith('.stp')) extractedFeatures = await FileParser.parseSTEP(selectedFile, settings);
             else if (fileName.endsWith('.png') || fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) extractedFeatures = await FileParser.parseImage(selectedFile, settings);
-            dispatch(camActions.setFeatures(extractedFeatures));
+            setFeatures(extractedFeatures);
 
             const getBounds = (pts: {x: number, y: number}[]) => {
                 if (!pts || pts.length === 0) return { width: 0, height: 0, minX: 0, maxX: 0, minY: 0, maxY: 0 };
@@ -314,12 +354,13 @@ const CAM = () => {
                 setDesignBounds({ width: globalBounds.width, height: globalBounds.height });
                 if (globalBounds.width > settings.stockWidth || globalBounds.height > settings.stockLength) {
                     const scale = Math.min((settings.stockWidth * 0.9) / globalBounds.width, (settings.stockLength * 0.9) / globalBounds.height);
-                    dispatch(camActions.updateSettings({ scalePercentage: Math.floor(scale * 100) }));
+                    setSettings(prev => ({ ...prev, scalePercentage: Math.floor(scale * 100) }));
                 } else {
-                    dispatch(camActions.updateSettings({ scalePercentage: 100 }));
+                    setSettings(prev => ({ ...prev, scalePercentage: 100 }));
                 }
             }
             
+            // Pre-calculate bounds for containment check optimization
             const boundsMap = new Map(extractedFeatures.map(f => [f.id, getBounds(f.points)]));
 
             const initialOptions: CAMPathingOption[] = extractedFeatures.map(f => {
@@ -330,7 +371,7 @@ const CAM = () => {
                     return fb.minX > ob.minX && fb.maxX < ob.maxX && fb.minY > ob.minY && fb.maxY < ob.maxY;
                 });
                 return {
-                    id: uuid(),
+                    id: Math.random().toString(36).substr(2, 9),
                     featureId: f.id,
                     type: (f.type === 'hole' || isContained) ? 'inside' : 'outside',
                     depth: settings.stockThickness,
@@ -339,8 +380,8 @@ const CAM = () => {
                     tabs: { enabled: false, count: 4, width: 5, height: 2 }
                 };
             });
-            dispatch(camActions.setPathingOptions(initialOptions));
-            pushToHistory();
+            setPathingOptions(initialOptions);
+            pushToHistory(initialOptions, settings, extractedFeatures);
             CAMAccessibility.announce(CAMAccessibility.describeFeatures(extractedFeatures, settings));
         } catch (error: unknown) {
             const msg = error instanceof Error ? error.message : String(error);
@@ -358,34 +399,30 @@ const CAM = () => {
     };
 
     const handleFeatureMove = (id: string, dx: number, dy: number) => {
-        const selectedIds = features.filter(f => f.selected && !f.parentId).map(f => f.id);
-        const targets = selectedIds.includes(id) ? selectedIds : [id];
-        
-        const nextFeatures = features.map(f => {
-            if (targets.includes(f.id) || (f.parentId && targets.includes(f.parentId))) {
-                return {
-                    ...f,
-                    points: f.points.map(p => ({ ...p, x: p.x + dx, y: p.y + dy })),
-                    meshVertices: f.meshVertices ? f.meshVertices.map((v, i) => {
-                        if (i % 3 === 0) return v + dx;
-                        if (i % 3 === 1) return v + dy;
-                        return v;
-                    }) : undefined
-                };
-            }
-            return f;
+        setFeatures(prev => {
+            const selectedIds = prev.filter(f => f.selected && !f.parentId).map(f => f.id);
+            // If the dragged item isn't selected, just move it. Otherwise move all selected.
+            const targets = selectedIds.includes(id) ? selectedIds : [id];
+            
+            return prev.map(f => {
+                if (targets.includes(f.id) || (f.parentId && targets.includes(f.parentId))) {
+                    return {
+                        ...f,
+                        points: f.points.map(p => ({ ...p, x: p.x + dx, y: p.y + dy })),
+                        meshVertices: f.meshVertices ? f.meshVertices.map((v, i) => {
+                            if (i % 3 === 0) return v + dx;
+                            if (i % 3 === 1) return v + dy;
+                            return v;
+                        }) : undefined
+                    };
+                }
+                return f;
+            });
         });
-        dispatch(camActions.setFeatures(nextFeatures));
     };
 
     const handleMoveEnd = () => {
-        pushToHistory();
-    };
-
-    const handleBulkToggle = (ids: string[], selected: boolean) => {
-        const next = features.map(f => ids.includes(f.id) ? { ...f, selected } : f);
-        dispatch(camActions.setFeatures(next));
-        pushToHistory();
+        pushToHistory(pathingOptions, settings, features);
     };
 
     const handleConfirmSafety = (skipForever: boolean) => {
@@ -398,8 +435,8 @@ const CAM = () => {
 
     const handleGenerateGcode = () => {
         setHasError(false);
-        const machineMaxX = parseFloat(machineSettings?.['$130'] || '1000');
-        const machineMaxY = parseFloat(machineSettings?.['$131'] || '1000');
+        const machineMaxX = parseFloat((controller.state as any)?.settings?.['$130'] || '1000');
+        const machineMaxY = parseFloat((controller.state as any)?.settings?.['$131'] || '1000');
         let requiredWidth = settings.stockWidth, requiredLength = settings.stockLength;
         if (designBounds) {
             requiredWidth = (designBounds.width * (settings.scalePercentage / 100)) * settings.nestingX + (settings.nestingSpacing * (settings.nestingX - 1));
@@ -411,14 +448,12 @@ const CAM = () => {
         }
 
         setIsGenerating(true);
-        dispatch(camActions.setEstimatedTime(null));
         CAMAccessibility.announce("Generating G-Code...");
         const worker = new Worker(new URL('../../workers/cam-generator.worker.ts', import.meta.url), { type: 'module' });
         worker.onmessage = (e) => {
             if (e.data.success) {
-                dispatch(camActions.setGcode(e.data.gcode));
-                dispatch(camActions.setOriginalGcode(e.data.gcode));
-                dispatch(camActions.setEstimatedTime(e.data.estimatedTime));
+                setGcode(e.data.gcode);
+                setOriginalGcode(e.data.gcode);
                 const file = new File([e.data.gcode], 'gsender_cam.gcode');
                 uploadGcodeFileToServer(file, controller.port, VISUALIZER_SECONDARY);
                 CAMAccessibility.announce(`G-Code generated. Estimated time: ${Math.ceil(e.data.estimatedTime)} minutes.`);
@@ -434,13 +469,14 @@ const CAM = () => {
             worker.terminate();
         };
         worker.onerror = (err: Event) => {
+            console.error("CAM Worker Error:", err);
             const message = (err instanceof ErrorEvent) ? err.message : ((err as any).message || 'Unknown error');
             setHasError(true);
-            setHasErrorMsg(`Worker thread crashed: ${message}.`);
+            setHasErrorMsg(`Worker thread crashed: ${message}. The design might be too complex for system memory.`);
             setIsGenerating(false);
             worker.terminate();
         };
-        worker.postMessage({ features, pathingOptions, settings, tools, machineSettings });
+        worker.postMessage({ features, pathingOptions, settings, tools });
     };
 
     const handleSaveProject = async () => {
@@ -461,10 +497,10 @@ const CAM = () => {
         reader.onload = (event) => {
             try {
                 const data: any = JSON.parse(event.target?.result as string);
-                if (data.settings) dispatch(camActions.setSettings(data.settings));
-                if (data.features) dispatch(camActions.setFeatures(data.features));
-                if (data.pathingOptions) dispatch(camActions.setPathingOptions(data.pathingOptions));
-                if (data.tools) dispatch(camActions.setTools(data.tools));
+                if (data.settings) updateSettings(data.settings);
+                if (data.features) setFeatures(data.features);
+                if (data.pathingOptions) setPathingOptions(data.pathingOptions);
+                if (data.tools) setTools(data.tools);
                 toast.success("Project loaded.");
             } catch (err) {
                 toast.error("Load failed.");
@@ -494,17 +530,8 @@ const CAM = () => {
         navigate('/');
     };
 
-    const handleReset = () => {
-        if (features.length === 0 || window.confirm("Are you sure you want to reset the current CAM session? All unsaved changes will be lost.")) {
-            dispatch(camActions.resetCAM());
-            setFile(null);
-            setHasError(false);
-            CAMAccessibility.announce("Reset.");
-        }
-    };
-
     const handleEditorUpdate = (newGcode: string) => {
-        dispatch(camActions.setGcode(newGcode));
+        setGcode(newGcode);
         const file = new File([newGcode], 'gsender_cam.gcode');
         uploadGcodeFileToServer(file, controller.port, VISUALIZER_SECONDARY);
         toast.success("Visualizer updated with edited G-Code.");
@@ -525,15 +552,15 @@ const CAM = () => {
             sorted[idx + 1].order = temp;
         }
 
-        dispatch(camActions.setFeatures(sorted));
-        pushToHistory();
+        setFeatures(sorted);
+        pushToHistory(pathingOptions, settings, sorted);
     };
 
     const handleWizardGenerate = (generatedFeatures: CAMFeature[]) => {
         const nextOrder = features.length;
         const orderedFeatures = generatedFeatures.map((f, i) => ({ ...f, order: nextOrder + i, selected: true }));
         const updatedFeatures = [...features, ...orderedFeatures];
-        dispatch(camActions.setFeatures(updatedFeatures));
+        setFeatures(updatedFeatures);
         
         const getBounds = (pts: {x: number, y: number}[]) => {
             let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -544,6 +571,7 @@ const CAM = () => {
         const globalBounds = getBounds(updatedFeatures.flatMap(f => f.points));
         setDesignBounds({ width: globalBounds.width, height: globalBounds.height });
 
+        // Pre-calculate bounds for containment check optimization
         const boundsMap = new Map(updatedFeatures.map(f => [f.id, getBounds(f.points)]));
 
         const newOptions: CAMPathingOption[] = orderedFeatures.map(f => {
@@ -554,7 +582,7 @@ const CAM = () => {
                 return fb.minX > ob.minX && fb.maxX < ob.maxX && fb.minY > ob.minY && fb.maxY < ob.maxY;
             });
             return {
-                id: uuid(),
+                id: Math.random().toString(36).substr(2, 9),
                 featureId: f.id,
                 type: isContained ? 'inside' : 'outside',
                 depth: settings.stockThickness,
@@ -563,8 +591,8 @@ const CAM = () => {
             };
         });
         const updatedOptions = [...pathingOptions, ...newOptions];
-        dispatch(camActions.setPathingOptions(updatedOptions));
-        pushToHistory();
+        setPathingOptions(updatedOptions);
+        pushToHistory(updatedOptions, settings, updatedFeatures);
         CAMAccessibility.announce(`Added ${generatedFeatures.length} features from wizard.`);
     };
 
@@ -572,7 +600,7 @@ const CAM = () => {
         return (
             <GuidedCAMWizard 
                 file={file} features={features} settings={settings} tools={tools} pathingOptions={pathingOptions}
-                onFileSelect={handleFileSelect} onToggleFeature={(id) => dispatch(camActions.setFeatures(features.map(f => f.id === id ? { ...f, selected: !f.selected } : f)))}
+                onFileSelect={handleFileSelect} onToggleFeature={(id) => setFeatures(features.map(f => f.id === id ? { ...f, selected: !f.selected } : f))}
                 onSettingsChange={updateSettings} onPathingChange={updatePathing} onGenerate={handleGenerateRequest} onExit={() => setIsWizardMode(false)}
             />
         );
@@ -586,204 +614,41 @@ const CAM = () => {
             {showChecklistModal && <SafetyChecklist onConfirm={handleConfirmSafety} onCancel={() => setShowChecklistModal(false)} />}
             {showWizards && <ParametricWizards features={features} settings={settings} onGenerate={handleWizardGenerate} onClose={() => setShowWizards(false)} />}
             
-            {showShortcuts && (
-                <div className="fixed inset-0 z-[200] bg-black/70 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setShowShortcuts(false)}>
-                    <div className="bg-white dark:bg-dark border rounded-xl shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
-                        <div className="flex justify-between items-center mb-6 border-b pb-4">
-                            <h3 className="text-xl font-bold flex items-center gap-3"><Keyboard className="text-blue-500" /> CAM Keyboard Shortcuts</h3>
-                            <Button variant="ghost" size="mini" onClick={() => setShowShortcuts(false)}>Close</Button>
-                        </div>
-                        <div className="space-y-4">
-                            {[
-                                { keys: 'Alt + G', label: 'Generate G-Code' },
-                                { keys: 'Alt + L', label: 'Load to Workspace' },
-                                { keys: 'Alt + R', label: 'Reset Session' },
-                                { keys: 'Ctrl + Z', label: 'Undo Action' },
-                                { keys: 'Ctrl + Y', label: 'Redo Action' },
-                                { keys: 'Ctrl + 1', label: 'Focus Feature List' },
-                                { keys: 'Ctrl + 2', label: 'Focus Visualizer' },
-                                { keys: 'Ctrl + 3', label: 'Focus Settings' },
-                                { keys: 'Space', label: 'Toggle Feature Selection' },
-                                { keys: 'Arrows', label: 'Navigate Feature List' }
-                            ].map(sh => (
-                                <div key={sh.keys} className="flex justify-between items-center p-2 rounded hover:bg-gray-50 dark:hover:bg-gray-800">
-                                    <span className="text-sm font-medium">{sh.label}</span>
-                                    <kbd className="px-2 py-1 bg-gray-100 dark:bg-gray-700 border rounded font-mono text-xs shadow-sm">{sh.keys}</kbd>
-                                </div>
-                            ))}
-                        </div>
-                        <p className="mt-8 text-xs text-gray-500 italic text-center italic">These shortcuts are specific to the CAM workspace.</p>
+            <header className="flex justify-between items-center p-2 border-b bg-gray-50/50 dark:bg-dark-light">
+                <div className="flex items-center gap-4">
+                    <FileSelector onFileSelect={handleFileSelect} />
+                    <Button onClick={() => setShowWizards(true)} variant="outline" size="sm" className="flex items-center gap-2">
+                        <Wand2 size={16} /> Create Parametric
+                    </Button>
+                    <div className="h-6 w-px bg-gray-300 dark:bg-gray-700" />
+                    <Button onClick={() => projectInputRef.current?.click()} variant="outline" size="sm" className="flex items-center gap-2">
+                        <FolderOpen size={16} /> Open Project (.gcam)
+                    </Button>
+                    <input type="file" ref={projectInputRef} onChange={handleLoadProject} accept=".gcam" className="hidden" />
+                    
+                    <div className="flex gap-1 ml-2">
+                        <Button onClick={handleUndo} disabled={historyIdx <= 0} variant="outline" size="mini" title="Undo (Ctrl+Z)"><Undo2 size={14} /></Button>
+                        <Button onClick={handleRedo} disabled={historyIdx >= history.length - 1} variant="outline" size="mini" title="Redo (Ctrl+Y)"><Redo2 size={14} /></Button>
                     </div>
                 </div>
-            )}
-
-            <header className="flex flex-col border-b bg-gray-50/50 dark:bg-dark-light">
-                <div className="flex justify-between items-center p-2">
-                    <div className="flex items-center gap-4">
-                        <FileSelector onFileSelect={handleFileSelect} hasFeatures={features.length > 0} />
-                        <div className="flex flex-col items-center">
-                            <Button 
-                                onClick={() => setShowWizards(true)} 
-                                variant="outline" 
-                                size="sm" 
-                                className="flex items-center gap-2"
-                                tooltip={{ content: "Open the parametric wizard to create common shapes and designs." }}
-                            >
-                                <Wand2 size={16} /> Create Parametric
-                            </Button>
-                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Add geometric shapes</span>}
-                        </div>
-                        <div className="h-6 w-px bg-gray-300 dark:bg-gray-700" />
-                        <div className="flex flex-col items-center">
-                            <Button 
-                                onClick={() => projectInputRef.current?.click()} 
-                                variant="outline" 
-                                size="sm" 
-                                className="flex items-center gap-2"
-                                tooltip={{ content: "Open an existing gSender CAM project file (.gcam)." }}
-                            >
-                                <FolderOpen size={16} /> Open Project (.gcam)
-                            </Button>
-                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Load .gcam project</span>}
-                        </div>
-                        <input type="file" ref={projectInputRef} onChange={handleLoadProject} accept=".gcam" className="hidden" />
-                        
-                        <div className="flex gap-1 ml-2">
-                            <div className="flex flex-col items-center">
-                                <Button 
-                                    onClick={handleUndo} 
-                                    disabled={historyIdx <= 0} 
-                                    variant="outline" 
-                                    size="mini" 
-                                    title="Undo (Ctrl+Z)"
-                                    tooltip={{ content: "Undo the last action." }}
-                                >
-                                    <Undo2 size={14} />
-                                </Button>
-                                {showHelp && <span className="text-[10px] text-gray-500 mt-1">Revert change</span>}
-                            </div>
-                            <div className="flex flex-col items-center">
-                                <Button 
-                                    onClick={handleRedo} 
-                                    disabled={historyIdx >= history.length - 1} 
-                                    variant="outline" 
-                                    size="mini" 
-                                    title="Redo (Ctrl+Y)"
-                                    tooltip={{ content: "Redo the last undone action." }}
-                                >
-                                    <Redo2 size={14} />
-                                </Button>
-                                {showHelp && <span className="text-[10px] text-gray-500 mt-1">Restore change</span>}
-                            </div>
-                        </div>
-                    </div>
-                    <div className="flex gap-2">
-                        <div className="flex flex-col items-center">
-                            <Button 
-                                onClick={printSetupSheet} 
-                                disabled={features.length === 0} 
-                                variant="outline" 
-                                size="sm" 
-                                className="gap-2"
-                                tooltip={{ content: "Print a job setup sheet with stock details and required tools." }}
-                            >
-                                <FileText size={16} /> Print Setup
-                            </Button>
-                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Export job details</span>}
-                        </div>
-                        {gcode && (
-                            <div className="flex flex-col items-center">
-                                <Button 
-                                    onClick={() => setShowEditor(!showEditor)} 
-                                    variant="outline" 
-                                    size="sm" 
-                                    className={cx("gap-2", showEditor && "bg-blue-100 border-blue-500 dark:bg-blue-900/30")}
-                                    tooltip={{ content: showEditor ? "Hide the G-Code editor." : "Open the G-Code editor to manually inspect or modify generated code." }}
-                                >
-                                    <FileText size={16} /> {showEditor ? "Hide Code" : "View Code"}
-                                </Button>
-                                {showHelp && <span className="text-[10px] text-gray-500 mt-1">Inspect/edit code</span>}
-                            </div>
-                        )}
-                        <div className="flex flex-col items-center">
-                            <Button 
-                                onClick={() => setShowNarrative(!showNarrative)} 
-                                variant="outline" 
-                                size="sm" 
-                                className={cx("gap-2", showNarrative && "bg-blue-100 border-blue-500 dark:bg-blue-900/30")}
-                                tooltip={{ content: showNarrative ? "Hide the toolpath narrative." : "Show a text description of the toolpaths for accessibility." }}
-                            >
-                                <MessageSquareText size={16} /> {showNarrative ? "Hide Narrative" : "Narrative"}
-                            </Button>
-                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Read description</span>}
-                        </div>
-                        <div className="flex flex-col items-center">
-                            <Button 
-                                onClick={handleSaveProject} 
-                                disabled={features.length === 0} 
-                                variant="outline" 
-                                size="sm" 
-                                className="flex items-center gap-2"
-                                tooltip={{ content: "Save the current design, tools, and settings as a .gcam project file." }}
-                            >
-                                <Save size={16} /> Save Project (.gcam)
-                            </Button>
-                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Save all settings</span>}
-                        </div>
-                        <div className="flex flex-col items-center">
-                            <Button 
-                                onClick={() => setIsWizardMode(true)} 
-                                size="sm"
-                                tooltip={{ content: "Open the step-by-step guided setup wizard." }}
-                            >
-                                Wizard
-                            </Button>
-                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Guided step-by-step</span>}
-                        </div>
-                        <div className="flex flex-col items-center">
-                            <Button 
-                                onClick={handleReset} 
-                                size="sm" 
-                                variant="ghost"
-                                tooltip={{ content: "Clear all features and reset the session. Requires confirmation if features are present." }}
-                            >
-                                Reset
-                            </Button>
-                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Clear and start over</span>}
-                        </div>
-                        <div className="h-8 w-px bg-gray-300 dark:bg-gray-700 mx-2 self-center" />
-                        <div className="flex flex-col items-center">
-                            <Button 
-                                onClick={() => setShowShortcuts(true)} 
-                                size="sm" 
-                                variant="ghost"
-                                className="h-9 w-9 p-0"
-                                aria-label="Open Keyboard Shortcut Map"
-                                tooltip={{ content: "View keyboard shortcut map for CAM." }}
-                            >
-                                <Keyboard size={18} />
-                            </Button>
-                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Shortcuts</span>}
-                        </div>
-                        <div className="flex flex-col items-center">
-                            <Button 
-                                onClick={() => setShowHelp(!showHelp)} 
-                                size="sm" 
-                                variant={showHelp ? "primary" : "ghost"}
-                                className="gap-2"
-                                tooltip={{ content: "Toggle Help Mode to show descriptions for all toolbar functions." }}
-                            >
-                                <HelpCircle size={16} /> {showHelp ? "Help ON" : "Help"}
-                            </Button>
-                            {showHelp && <span className="text-[10px] text-blue-500 mt-1 font-bold italic">Toggle labels</span>}
-                        </div>
-                    </div>
+                <div className="flex gap-2">
+                    <Button onClick={printSetupSheet} disabled={features.length === 0} variant="outline" size="sm" className="gap-2">
+                        <FileText size={16} /> Print Setup
+                    </Button>
+                    {gcode && (
+                        <Button onClick={() => setShowEditor(!showEditor)} variant="outline" size="sm" className={cx("gap-2", showEditor && "bg-blue-100 border-blue-500 dark:bg-blue-900/30")}>
+                            <FileText size={16} /> {showEditor ? "Hide Code" : "View Code"}
+                        </Button>
+                    )}
+                    <Button onClick={() => setShowNarrative(!showNarrative)} variant="outline" size="sm" className={cx("gap-2", showNarrative && "bg-blue-100 border-blue-500 dark:bg-blue-900/30")}>
+                        <MessageSquareText size={16} /> {showNarrative ? "Hide Narrative" : "Narrative"}
+                    </Button>
+                    <Button onClick={handleSaveProject} disabled={features.length === 0} variant="outline" size="sm" className="flex items-center gap-2">
+                        <Save size={16} /> Save
+                    </Button>
+                    <Button onClick={() => setIsWizardMode(true)} size="sm">Wizard</Button>
+                    <Button onClick={() => { setFile(null); setFeatures([]); setGcode(''); setHasError(false); CAMAccessibility.announce("Reset."); }} size="sm" variant="ghost">Reset</Button>
                 </div>
-                {showHelp && (
-                    <div className="px-4 pb-2 text-[11px] text-blue-600 dark:text-blue-400 italic bg-blue-50/50 dark:bg-blue-900/10 border-t border-blue-100 dark:border-blue-900/30">
-                        Help Mode Active: Button descriptions are shown below each action. Use the "Wizard" for a guided experience.
-                    </div>
-                )}
             </header>
 
             <div className="flex flex-1 overflow-hidden gap-4">
@@ -791,12 +656,9 @@ const CAM = () => {
                     <h2 className="text-lg font-bold mb-2">Features</h2>
                     <FeatureList 
                         features={features} 
-                        onToggleFeature={(id) => dispatch(camActions.setFeatures(features.map(f => f.id === id ? { ...f, selected: !f.selected } : f)))} 
-                        onBulkToggle={handleBulkToggle}
+                        onToggleFeature={(id) => setFeatures(features.map(f => f.id === id ? { ...f, selected: !f.selected } : f))} 
                         onReorder={handleReorder}
                         settings={settings}
-                        options={pathingOptions}
-                        tools={tools}
                         focusedIdx={focusedFeatureIdx}
                     />
                 </aside>
@@ -849,66 +711,24 @@ const CAM = () => {
                     <div className="h-full pt-12 flex flex-col overflow-hidden">
                         <Tabs 
                             items={[
-                                { 
-                                    label: 'Pathing', 
-                                    content: () => (
-                                        <div className="overflow-y-auto h-full p-2">
-                                            <ToolpathSettings features={features.filter(f => f.selected)} />
-                                        </div>
-                                    ) 
-                                },
-                                { 
-                                    label: 'Global', 
-                                    content: () => (
-                                        <div className="overflow-y-auto h-full p-2">
-                                            <GlobalSettings designBounds={designBounds} />
-                                        </div>
-                                    ) 
-                                },
-                                { 
-                                    label: 'Tools', 
-                                    content: () => (
-                                        <div className="overflow-y-auto h-full p-2">
-                                            <ToolDatabase />
-                                        </div>
-                                    ) 
-                                }
+                                { label: 'Pathing', content: () => <div className="overflow-y-auto h-full p-2"><ToolpathSettings features={features.filter(f => f.selected)} options={pathingOptions} tools={tools} onChange={updatePathing} settings={settings} /></div> },
+                                { label: 'Global', content: () => <div className="overflow-y-auto h-full p-2"><GlobalSettings settings={settings} onChange={updateSettings} designBounds={designBounds} /></div> },
+                                { label: 'Tools', content: () => <div className="overflow-y-auto h-full p-2"><ToolDatabase tools={tools} onChange={handleToolsChange} /></div> }
                             ]}
                         />
                     </div>
                 </aside>
             </div>
 
-            <footer className="flex justify-between items-center p-2 border-t bg-gray-50/50 dark:bg-dark-light">
-                <div className="flex items-center gap-6 px-4">
-                    {estimatedTime !== null && (
-                        <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 animate-in fade-in slide-in-from-left-2">
-                            <Clock size={16} />
-                            <span className="text-sm font-bold">Estimated Job Duration: <span className="font-mono">{Math.ceil(estimatedTime)} min</span></span>
-                        </div>
-                    )}
-                    {features.filter(f => f.selected).length > 0 && (
-                        <div className="text-[11px] text-gray-500 uppercase font-bold tracking-tight">
-                            {features.filter(f => f.selected).length} Operations Selected
-                        </div>
-                    )}
-                </div>
-                <div className="flex gap-4">
-                    <Button onClick={handleGenerateRequest} disabled={features.filter(f => f.selected).length === 0 || isGenerating}>
-                        {isGenerating ? 'Generating...' : 'Generate G-Code (Alt+G)'}
-                    </Button>
-                    <Button onClick={handleSaveToFile} disabled={!gcode || isGenerating} variant="outline">Save G-Code</Button>
-                    <Button onClick={handleLoadToSender} disabled={!gcode || isGenerating}>Load to Workspace (Alt+L)</Button>
-                </div>
+            <footer className="flex justify-end gap-4 p-2 border-t bg-gray-50/50 dark:bg-dark-light">
+                <Button onClick={handleGenerateRequest} disabled={features.filter(f => f.selected).length === 0 || isGenerating}>
+                    {isGenerating ? 'Generating...' : 'Generate G-Code (Alt+G)'}
+                </Button>
+                <Button onClick={handleSaveToFile} disabled={!gcode || isGenerating} variant="outline">Save G-Code</Button>
+                <Button onClick={handleLoadToSender} disabled={!gcode || isGenerating}>Load to Workspace (Alt+L)</Button>
             </footer>
         </div>
     );
 };
 
-const CAMWithBoundary = () => (
-    <CAMErrorBoundary>
-        <CAM />
-    </CAMErrorBoundary>
-);
-
-export default CAMWithBoundary;
+export default CAM;
