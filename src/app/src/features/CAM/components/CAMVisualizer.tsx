@@ -17,6 +17,7 @@ import JogHelper from '../../Jogging/utils/jogHelper';
 import useKeybinding from '../../../lib/useKeybinding';
 import { JOGGING_CATEGORY } from '../../../constants';
 import store from '../../../store';
+import SolidSimulator from './SolidSimulator';
 
 interface CAMVisualizerProps {
     features: CAMFeature[];
@@ -322,8 +323,12 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
                 </div>
             )}
 
-            {/* @ts-ignore */}
-            <Visualizer isSecondary receivedLines={scrubValue} forceShowTool={setupAssistant} />
+            {settings.solidSimulation ? (
+                <SolidSimulator gcode={gcode} settings={settings} tools={[]} currentLine={scrubValue} />
+            ) : (
+                /* @ts-ignore */
+                <Visualizer isSecondary receivedLines={scrubValue} forceShowTool={setupAssistant} />
+            )}
 
             {gcode && (
                 <div className="absolute bottom-4 left-4 right-4 z-10 bg-black/60 p-3 rounded-lg border border-gray-700 backdrop-blur-sm">

@@ -253,6 +253,11 @@ const GlobalSettings = ({ designBounds }: GlobalSettingsProps) => {
 
             <SectionHeader title="Output Control" />
             <SettingRow 
+                label="Split Export by Tool"
+                description="Save multiple files instead of one if using different tools."
+                control={<Switch checked={!!settings.exportSplitByTool} onChange={(checked) => handleValueChange('exportSplitByTool', checked)} />}
+            />
+            <SettingRow 
                 label="Include Comments"
                 description="Embed descriptive comments and feature names in G-Code."
                 control={<Switch checked={settings.gcodeComments !== false} onChange={(checked) => handleValueChange('gcodeComments', checked)} />}

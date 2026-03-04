@@ -9,6 +9,8 @@ interface CAMState {
     pathingOptions: CAMPathingOption[];
     gcode: string;
     originalGcode: string;
+    multiFiles?: { name: string, gcode: string, estimatedTime: number }[];
+    currentMultiFileIdx: number;
     estimatedTime: number | null;
     history: { options: CAMPathingOption[], settings: CAMSettings, features: CAMFeature[] }[];
     historyIdx: number;
@@ -47,6 +49,8 @@ const initialState: CAMState = {
     pathingOptions: [],
     gcode: '',
     originalGcode: '',
+    multiFiles: [],
+    currentMultiFileIdx: 0,
     estimatedTime: null,
     history: [],
     historyIdx: -1
@@ -84,6 +88,16 @@ const camSlice = createSlice({
         },
         setOriginalGcode: (state, action: PayloadAction<string>) => {
             state.originalGcode = action.payload;
+        },
+        setMultiFiles: (state, action: PayloadAction<{ name: string, gcode: string, estimatedTime: number }[] | undefined>) => {
+            state.multiFiles = action.payload;
+            state.currentMultiFileIdx = 0;
+        },
+        incrementMultiFileIdx: (state) => {
+            state.currentMultiFileIdx += 1;
+        },
+        resetMultiFileIdx: (state) => {
+            state.currentMultiFileIdx = 0;
         },
         setEstimatedTime: (state, action: PayloadAction<number | null>) => {
             state.estimatedTime = action.payload;
@@ -133,6 +147,9 @@ export const {
     updatePathing,
     setGcode,
     setOriginalGcode,
+    setMultiFiles,
+    incrementMultiFileIdx,
+    resetMultiFileIdx,
     setEstimatedTime,
     pushToHistory,
     undo,

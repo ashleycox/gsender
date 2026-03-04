@@ -4,6 +4,7 @@ import pubsub from 'pubsub-js';
 import cx from 'classnames';
 import { cloneDeep } from 'lodash';
 import { v4 as uuid } from 'uuid';
+import JSZip from 'jszip';
 import { Button } from '../../components/Button';
 import Tabs from '../../components/Tabs';
 import { uploadGcodeFileToServer } from '../../lib/fileupload';
@@ -415,6 +416,9 @@ const CAM = () => {
                 dispatch(camActions.setGcode(e.data.gcode));
                 dispatch(camActions.setOriginalGcode(e.data.gcode));
                 dispatch(camActions.setEstimatedTime(e.data.estimatedTime));
+                if (e.data.multiFiles) dispatch(camActions.setMultiFiles(e.data.multiFiles));
+                else dispatch(camActions.setMultiFiles([]));
+                
                 const file = new File([e.data.gcode], 'gsender_cam.gcode');
                 uploadGcodeFileToServer(file, controller.port, VISUALIZER_SECONDARY);
                 CAMAccessibility.announce(`G-Code generated. Estimated time: ${Math.ceil(e.data.estimatedTime)} minutes.`);
@@ -472,14 +476,32 @@ const CAM = () => {
 
     const handleSaveToFile = async () => {
         if (!gcode) return;
-        const success = await saveAsDialog(
-            gcode,
-            "gsender_cam.gcode",
-            [{ description: 'G-Code Files', accept: { 'text/plain': ['.gcode', '.nc', '.tap', '.cnc'] } }]
-        );
-        if (success) {
-            CAMAccessibility.announce("G-Code saved.");
-            toast.success("G-Code saved.");
+        
+        if (settings.exportSplitByTool && camState.multiFiles && camState.multiFiles.length > 0) {
+            const zip = new JSZip();
+            camState.multiFiles.forEach((mf: any) => {
+                zip.file(mf.name, mf.gcode);
+            });
+            const blob = await zip.generateAsync({ type: 'blob' });
+            const success = await saveAsDialog(
+                blob,
+                "gsender_cam_split.zip",
+                [{ description: 'ZIP Archive', accept: { 'application/zip': ['.zip'] } }]
+            );
+            if (success) {
+                CAMAccessibility.announce("Split G-Code ZIP saved.");
+                toast.success("Split G-Code ZIP saved.");
+            }
+        } else {
+            const success = await saveAsDialog(
+                gcode,
+                "gsender_cam.gcode",
+                [{ description: 'G-Code Files', accept: { 'text/plain': ['.gcode', '.nc', '.tap', '.cnc'] } }]
+            );
+            if (success) {
+                CAMAccessibility.announce("G-Code saved.");
+                toast.success("G-Code saved.");
+            }
         }
     };
 
@@ -489,11 +511,43 @@ const CAM = () => {
             return;
         }
 
-        const name = 'gsender_cam.gcode';
-        pubsub.publish('gcode:surfacing', { gcode, name, size: new File([gcode], name).size });
+        let finalGcode = gcode;
+        let finalName = 'gsender_cam.gcode';
+
+        // Check for Multi-File Split Job progress
+        if (settings.exportSplitByTool && camState.multiFiles && camState.multiFiles.length > 0) {
+            const currentPart = camState.multiFiles[camState.currentMultiFileIdx];
+            if (currentPart) {
+                finalGcode = currentPart.gcode;
+                finalName = currentPart.name;
+                
+                const isLastPart = camState.currentMultiFileIdx === camState.multiFiles.length - 1;
+                const partMsg = `Loading Part ${camState.currentMultiFileIdx + 1} of ${camState.multiFiles.length} (${finalName}).`;
+                
+                dispatch(camActions.incrementMultiFileIdx());
+                
+                pubsub.publish('gcode:surfacing', { gcode: finalGcode, name: finalName, size: new File([finalGcode], finalName).size });
+                CAMAccessibility.announce(partMsg);
+                
+                if (isLastPart) {
+                    toast.success("Final part loaded. Job complete!");
+                } else {
+                    toast.info(`${partMsg} Return to CAM after this phase to load the next tool.`);
+                }
+                
+                navigate('/');
+                return;
+            }
+        }
+
+        pubsub.publish('gcode:surfacing', { gcode, name: finalName, size: new File([gcode], finalName).size });
         CAMAccessibility.announce("G-Code loaded.");
         navigate('/');
     };
+
+    const isMidSplitJob = settings.exportSplitByTool && camState.multiFiles && camState.multiFiles.length > 0 && camState.currentMultiFileIdx > 0;
+    const splitJobFinished = settings.exportSplitByTool && camState.multiFiles && camState.multiFiles.length > 0 && camState.currentMultiFileIdx >= camState.multiFiles.length;
+
     const handleReset = () => {
         if (features.length === 0 || window.confirm("Are you sure you want to reset the current CAM session? All unsaved changes will be lost.")) {
             dispatch(camActions.resetCAM());
@@ -888,8 +942,14 @@ const CAM = () => {
                         </div>
                     )}
                     {features.filter(f => f.selected).length > 0 && (
-                        <div className="text-[11px] text-gray-500 uppercase font-bold tracking-tight">
-                            {features.filter(f => f.selected).length} Operations Selected
+                        <div className="text-[11px] text-gray-500 uppercase font-bold tracking-tight flex items-center gap-4">
+                            <span>{features.filter(f => f.selected).length} Operations Selected</span>
+                            {isMidSplitJob && (
+                                <div className="flex items-center gap-2 px-3 py-1 bg-amber-500/10 border border-amber-500/30 rounded text-amber-500 animate-pulse">
+                                    <AlertTriangle size={12} />
+                                    <span className="text-[10px] font-black uppercase">Part {camState.currentMultiFileIdx} of {camState.multiFiles?.length} Loaded</span>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -898,7 +958,15 @@ const CAM = () => {
                         {isGenerating ? 'Generating...' : 'Generate G-Code (Alt+G)'}
                     </Button>
                     <Button onClick={handleSaveToFile} disabled={!gcode || isGenerating} variant="outline">Save G-Code</Button>
-                    <Button onClick={handleLoadToSender} disabled={!gcode || isGenerating}>Load to Workspace (Alt+L)</Button>
+                    <Button 
+                        onClick={handleLoadToSender} 
+                        disabled={!gcode || isGenerating || splitJobFinished}
+                        className={cx(isMidSplitJob && "bg-amber-600 hover:bg-amber-500 border-amber-400")}
+                    >
+                        {splitJobFinished ? "Job Fully Loaded" : 
+                         isMidSplitJob ? `Load Next Part (${camState.currentMultiFileIdx + 1}/${camState.multiFiles?.length})` : 
+                         "Load to Workspace (Alt+L)"}
+                    </Button>
                 </div>
             </footer>
         </div>

@@ -331,10 +331,10 @@ const ToolpathSettings = ({ features }: ToolpathSettingsProps) => {
                                 <ToolpathInputRow 
                                     label="Holding Tabs" 
                                     description="Leave small bridges of material to keep the part attached to the stock." 
-                                    control={<Switch id={`tabs-toggle-${feature.id}`} checked={option.tabs?.enabled || false} onChange={(checked) => handleOptionChange(feature.id, { tabs: { ...(option.tabs || { count: 4, width: 5, height: 2 }), enabled: checked } })} />} 
+                                    control={<Switch id={`tabs-toggle-${feature.id}`} checked={option.tabs?.enabled || false} onChange={(checked) => handleOptionChange(feature.id, { tabs: { ...(option.tabs || { count: 4, width: 5, height: 2, smartTabs: true }), enabled: checked } })} />} 
                                 />
                                 {option.tabs?.enabled && (
-                                    <div className="grid grid-cols-3 gap-2 p-2 bg-gray-50/50 dark:bg-black/20">
+                                    <div className="grid grid-cols-4 gap-2 p-2 bg-gray-50/50 dark:bg-black/20">
                                         <div className="flex flex-col gap-1">
                                             <label className="text-[9px] font-bold">Count</label>
                                             <ControlledInput id={`tabs-count-${feature.id}`} type="number" value={option.tabs.count} onChange={(e) => handleOptionChange(feature.id, { tabs: { ...option.tabs!, count: Number(e.target.value) } })} className="h-7 text-xs" />
@@ -346,6 +346,12 @@ const ToolpathSettings = ({ features }: ToolpathSettingsProps) => {
                                         <div className="flex flex-col gap-1">
                                             <label className="text-[9px] font-bold">Height</label>
                                             <ControlledInput id={`tabs-height-${feature.id}`} type="number" value={option.tabs.height} onChange={(e) => handleOptionChange(feature.id, { tabs: { ...option.tabs!, height: Number(e.target.value) } })} className="h-7 text-xs" />
+                                        </div>
+                                        <div className="flex flex-col gap-1 items-center justify-center pt-3">
+                                            <label className="flex items-center gap-1 text-[9px] font-bold cursor-pointer" title="Place tabs on straightest edges automatically">
+                                                <Switch checked={!!option.tabs.smartTabs} onChange={(checked) => handleOptionChange(feature.id, { tabs: { ...option.tabs!, smartTabs: checked } })} />
+                                                Smart
+                                            </label>
                                         </div>
                                     </div>
                                 )}

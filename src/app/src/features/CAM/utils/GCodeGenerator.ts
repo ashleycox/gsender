@@ -228,38 +228,65 @@ export default class GCodeGenerator {
         const totalNestY = this.settings.nestingType === 'true-shape' ? 1 : Math.max(1, this.settings.nestingY);
 
         let optimizedOperations = [...operations];
-        if (this.settings.optimizePath) {
+        if (this.settings.optimizePath && optimizedOperations.length > 1) {
+            // Group by tool first, as tool changes are the most expensive
+            const toolGroups = new Map<string, typeof operations>();
+            optimizedOperations.forEach(op => {
+                const arr = toolGroups.get(op.tool!.id) || [];
+                arr.push(op);
+                toolGroups.set(op.tool!.id, arr);
+            });
+
             const result: typeof operations = [];
             let currentPos = { x: 0, y: 0 };
-            const remaining = [...operations];
 
-            while (remaining.length > 0) {
-                let bestIdx = -1;
-                let minDist = Infinity;
+            for (const [toolId, group] of toolGroups.entries()) {
+                // Initialize with Greedy Nearest-Neighbor
+                let route = [];
+                let remaining = [...group];
+                let pos = { ...currentPos };
 
-                for (let i = 0; i < remaining.length; i++) {
-                    const op = remaining[i];
-                    if (currentToolId && op.tool!.id !== currentToolId) continue;
-                    const startPt = op.feature.points[0] || { x: 0, y: 0 };
-                    const dist = Math.hypot(startPt.x - currentPos.x, startPt.y - currentPos.y);
-                    if (dist < minDist) { minDist = dist; bestIdx = i; }
+                while (remaining.length > 0) {
+                    let bestIdx = 0;
+                    let minDist = Infinity;
+                    for (let i = 0; i < remaining.length; i++) {
+                        const pt = remaining[i].feature.points[0] || { x: 0, y: 0 };
+                        const d = Math.hypot(pt.x - pos.x, pt.y - pos.y);
+                        if (d < minDist) { minDist = d; bestIdx = i; }
+                    }
+                    const best = remaining.splice(bestIdx, 1)[0];
+                    route.push(best);
+                    pos = best.feature.points[best.feature.points.length - 1] || pos;
                 }
 
-                if (bestIdx === -1) {
-                    minDist = Infinity;
-                    for (let i = 0; i < remaining.length; i++) {
-                        const op = remaining[i];
-                        const startPt = op.feature.points[0] || { x: 0, y: 0 };
-                        const dist = Math.hypot(startPt.x - currentPos.x, startPt.y - currentPos.y);
-                        if (dist < minDist) { minDist = dist; bestIdx = i; }
+                // Apply 2-opt refinement
+                let improved = true;
+                const getDist = (a: any, b: any) => {
+                    const p1 = a.feature.points[a.feature.points.length - 1] || { x: 0, y: 0 };
+                    const p2 = b.feature.points[0] || { x: 0, y: 0 };
+                    return Math.hypot(p2.x - p1.x, p2.y - p1.y);
+                };
+
+                while (improved) {
+                    improved = false;
+                    for (let i = 0; i < route.length - 1; i++) {
+                        for (let k = i + 2; k < route.length; k++) {
+                            const currentDist = getDist(route[i], route[i+1]) + (k+1 < route.length ? getDist(route[k], route[k+1]) : 0);
+                            const newDist = getDist(route[i], route[k]) + (k+1 < route.length ? getDist(route[i+1], route[k+1]) : 0);
+                            
+                            if (newDist < currentDist) {
+                                // Reverse the segment
+                                const rev = route.slice(i+1, k+1).reverse();
+                                route.splice(i+1, rev.length, ...rev);
+                                improved = true;
+                            }
+                        }
                     }
                 }
 
-                const bestOp = remaining.splice(bestIdx, 1)[0];
-                result.push(bestOp);
-                const endPt = bestOp.feature.points[bestOp.feature.points.length - 1] || { x: 0, y: 0 };
-                currentPos = { x: endPt.x, y: endPt.y };
-                currentToolId = bestOp.tool!.id;
+                result.push(...route);
+                const lastOp = route[route.length - 1];
+                currentPos = lastOp.feature.points[lastOp.feature.points.length - 1] || currentPos;
             }
             optimizedOperations = result;
         }
@@ -397,15 +424,30 @@ export default class GCodeGenerator {
                         let tabCenters: number[] = [];
                         if (option.tabs?.enabled && option.tabs.count > 0) {
                             let totalLen = 0;
-                            for (let i = 1; i < path.length; i++) totalLen += Math.hypot(path[i].x - path[i-1].x, path[i].y - path[i-1].y);
-                            const spacing = totalLen / option.tabs.count;
-                            let curLen = 0;
+                            const segments = [];
                             for (let i = 1; i < path.length; i++) {
-                                const segLen = Math.hypot(path[i].x - path[i-1].x, path[i].y - path[i-1].y);
-                                while (curLen + segLen > tabCenters.length * spacing + (spacing/2)) {
-                                    tabCenters.push(curLen + (tabCenters.length * spacing + (spacing/2) - curLen));
+                                const p1 = path[i-1], p2 = path[i];
+                                const len = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+                                totalLen += len;
+                                segments.push({ startDist: totalLen - len, len, center: totalLen - (len/2) });
+                            }
+                            
+                            if (option.tabs.smartTabs) {
+                                // Smart Tabs: pick the longest segments and place tabs in their centers
+                                segments.sort((a, b) => b.len - a.len);
+                                const selectedSegments = segments.slice(0, option.tabs.count);
+                                tabCenters = selectedSegments.map(s => s.center).sort((a, b) => a - b);
+                            } else {
+                                // Even distance distribution
+                                const spacing = totalLen / option.tabs.count;
+                                let curLen = 0;
+                                for (let i = 1; i < path.length; i++) {
+                                    const segLen = Math.hypot(path[i].x - path[i-1].x, path[i].y - path[i-1].y);
+                                    while (curLen + segLen > tabCenters.length * spacing + (spacing/2)) {
+                                        tabCenters.push(curLen + (tabCenters.length * spacing + (spacing/2) - curLen));
+                                    }
+                                    curLen += segLen;
                                 }
-                                curLen += segLen;
                             }
                         }
 
@@ -516,13 +558,37 @@ export default class GCodeGenerator {
             const initialOffset = startDepth > 0 ? dir * (startDepth * Math.tan((angle / 2) * Math.PI / 180)) : dir * 0.1;
             let cur = initialOffset;
             const step = Math.max(0.00001, t.metricDiameter * (t.stepover / 100));
+
+            const distToSegment = (p: {x:number, y:number}, v: {x:number, y:number}, w: {x:number, y:number}) => {
+                const l2 = Math.pow(w.x - v.x, 2) + Math.pow(w.y - v.y, 2);
+                if (l2 === 0) return Math.hypot(p.x - v.x, p.y - v.y);
+                let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+                t = Math.max(0, Math.min(1, t));
+                return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
+            };
+
+            const minDistanceToBoundary = (pt: {x:number, y:number}) => {
+                let minDist = Infinity;
+                for (let i = 0; i < f.points.length; i++) {
+                    const d = distToSegment(pt, f.points[i], f.points[(i+1)%f.points.length]);
+                    if (d < minDist) minDist = d;
+                }
+                return minDist;
+            };
+
             for (let p = 0; p < 50; p++) {
                 const op = this.offsetPath(f.points, cur)[0];
+                if (!op || op.length === 0) break;
                 let minX = Infinity, maxX = -Infinity; op.forEach(pt => { minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x); });
                 if (maxX - minX < 0.1 || op.length < 3) break;
-                let depth = Math.min(Math.abs(cur) / Math.tan((angle / 2) * Math.PI / 180), flatDepth);
-                if (startDepth > 0 && depth < startDepth) depth = startDepth;
-                vPaths.push(op.map(pt => ({ ...pt, z: -depth })));
+                
+                vPaths.push(op.map(pt => {
+                    // True Dynamic V-Carve: Z varies based on exact distance to closest boundary wall
+                    const exactDist = minDistanceToBoundary(pt);
+                    let dynDepth = Math.min(exactDist / Math.tan((angle / 2) * Math.PI / 180), flatDepth);
+                    if (startDepth > 0 && dynDepth < startDepth) dynDepth = startDepth;
+                    return { ...pt, z: -dynDepth };
+                }));
                 cur += (dir * step);
             }
             return vPaths.reverse();

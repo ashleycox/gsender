@@ -36,6 +36,7 @@ export interface CAMPathingOption {
         count: number;
         width: number;
         height: number;
+        smartTabs?: boolean;
     };
     // 2.5D Advanced Options
     vCarveFlatDepth?: number;
@@ -141,6 +142,7 @@ export interface CAMSettings {
     enableAudioAlerts?: boolean;
     gcodeComments?: boolean;
     gcodeLineNumbers?: boolean;
+    exportSplitByTool?: boolean;
     defaultSafeZ?: number;
 }
 
