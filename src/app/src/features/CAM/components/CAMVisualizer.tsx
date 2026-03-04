@@ -22,12 +22,13 @@ import SolidSimulator from './SolidSimulator';
 interface CAMVisualizerProps {
     features: CAMFeature[];
     settings: CAMSettings;
+    tools: CAMTool[];
     gcode?: string;
     onMoveFeature: (id: string, dx: number, dy: number) => void;
     onMoveEnd: () => void;
 }
 
-const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: CAMVisualizerProps) => {
+const CAMVisualizer = ({ features, settings, tools, gcode, onMoveFeature, onMoveEnd }: CAMVisualizerProps) => {
     const dispatch = useDispatch();
     const [scrubValue, setScrubValue] = useState(0);
     const [isMoveMode, setIsMoveMode] = useState(false);
@@ -324,7 +325,7 @@ const CAMVisualizer = ({ features, settings, gcode, onMoveFeature, onMoveEnd }: 
             )}
 
             {settings.solidSimulation ? (
-                <SolidSimulator gcode={gcode} settings={settings} tools={[]} currentLine={scrubValue} />
+                <SolidSimulator gcode={gcode} settings={settings} tools={tools} currentLine={scrubValue} />
             ) : (
                 /* @ts-ignore */
                 <Visualizer isSecondary receivedLines={scrubValue} forceShowTool={setupAssistant} />

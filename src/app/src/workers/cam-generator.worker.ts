@@ -1,6 +1,5 @@
 import GCodeGenerator from '../features/CAM/utils/GCodeGenerator';
 
-// A Web Worker to handle the heavy lifting of GCode path calculation
 self.onmessage = (e) => {
     try {
         const { features, pathingOptions, settings, tools, machineSettings } = e.data;

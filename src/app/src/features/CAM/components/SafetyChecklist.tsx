@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Button } from '../../../components/Button';
 import Switch from '../../../components/Switch';
 import { AlertTriangle, CheckCircle, X } from 'lucide-react';
+import { Checkbox } from '../../../components/shadcn/Checkbox';
 
 interface SafetyChecklistProps {
     onConfirm: (skipForever: boolean) => void;
@@ -36,7 +37,7 @@ const SafetyChecklist = ({ onConfirm, onCancel }: SafetyChecklistProps) => {
                     Forgetting a single step can lead to a machine crash. Please confirm your setup:
                 </p>
 
-                <div className="space-y-3 mb-8">
+                <div className="space-y-2 mb-8">
                     {[
                         { id: 'clamped', label: 'Material is SECURELY clamped to the bed.' },
                         { id: 'bitInstalled', label: 'The CORRECT tool is installed in the spindle.' },
@@ -44,15 +45,19 @@ const SafetyChecklist = ({ onConfirm, onCancel }: SafetyChecklistProps) => {
                         { id: 'colletTight', label: 'Collet and tool are tightened (Hand + Wrench).' },
                         { id: 'clearPath', label: 'Gantry travel is clear of clamps and wires.' },
                     ].map(item => (
-                        <label key={item.id} className="flex items-center gap-3 p-3 rounded-md bg-gray-50 dark:bg-dark border border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-100 dark:hover:bg-dark-light transition-colors group">
-                            <input 
-                                type="checkbox" 
+                        <div 
+                            key={item.id} 
+                            className="flex items-center gap-3 p-3 rounded-md bg-gray-50 dark:bg-dark border border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-100 dark:hover:bg-dark-light transition-colors group"
+                            onClick={() => setChecks({...checks, [item.id]: !checks[item.id as keyof typeof checks]})}
+                        >
+                            <Checkbox 
                                 checked={checks[item.id as keyof typeof checks]} 
-                                onChange={(e) => setChecks({...checks, [item.id]: e.target.checked})}
-                                className="w-5 h-5 rounded border-gray-300 text-blue-500 focus:ring-blue-500"
+                                onCheckedChange={(val) => setChecks({...checks, [item.id]: !!val})}
                             />
-                            <span className="text-sm font-medium group-hover:text-blue-500 dark:group-hover:text-blue-400">{item.label}</span>
-                        </label>
+                            <span className="text-sm font-medium group-hover:text-blue-500 dark:group-hover:text-blue-400 select-none">
+                                {item.label}
+                            </span>
+                        </div>
                     ))}
                 </div>
 

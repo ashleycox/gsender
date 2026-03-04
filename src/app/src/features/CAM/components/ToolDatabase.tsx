@@ -11,6 +11,7 @@ import { useDispatch } from 'react-redux';
 import { useTypedSelector } from '../../../hooks/useTypedSelector';
 import * as camActions from '../../../store/redux/slices/cam.slice';
 import { v4 as uuid } from 'uuid';
+import { Confirm } from '../../../components/ConfirmationDialog/ConfirmationDialogLib';
 
 const ToolDatabase = () => {
     const dispatch = useDispatch();
@@ -85,17 +86,24 @@ const ToolDatabase = () => {
                 const importedTools = JSON.parse(event.target?.result as string) as CAMTool[];
                 if (!Array.isArray(importedTools)) throw new Error('Invalid format');
 
-                const mode = window.confirm('Click OK to MERGE with existing tools, or Cancel to REPLACE the entire database.') ? 'merge' : 'replace';
-                
-                if (mode === 'merge') {
-                    const existingNames = new Set(tools.map(t => (t.name || '').toLowerCase()));
-                    const uniqueNew = importedTools.filter(t => t.name && !existingNames.has(t.name.toLowerCase()));
-                    dispatch(camActions.setTools([...tools, ...uniqueNew]));
-                    toast.success(`Merged ${uniqueNew.length} new tools.`);
-                } else {
-                    dispatch(camActions.setTools(importedTools));
-                    toast.success('Tool database replaced.');
-                }
+                Confirm({
+                    title: 'Import Tools',
+                    content: 'Do you want to MERGE with existing tools or REPLACE the entire database?',
+                    confirmLabel: 'Merge',
+                    cancelLabel: 'Replace',
+                    onConfirm: () => {
+                        const existingNames = new Set(tools.map(t => (t.name || '').toLowerCase()));
+                        const uniqueNew = importedTools.filter(t => t.name && !existingNames.has(t.name.toLowerCase()));
+                        dispatch(camActions.setTools([...tools, ...uniqueNew]));
+                        toast.success(`Merged ${uniqueNew.length} new tools.`);
+                    },
+                    onClose: () => {
+                        // Using 'onClose' here as the 'Cancel' (Replace) handler 
+                        // if we want to follow gSender's ConfirmationDialogLib pattern
+                        dispatch(camActions.setTools(importedTools));
+                        toast.success('Tool database replaced.');
+                    }
+                });
             } catch (err) {
                 toast.error('Failed to import tools. Invalid file format.');
             }

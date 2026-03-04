@@ -23,6 +23,7 @@ import FileParser from './utils/FileParser';
 import GuidedCAMWizard from './components/GuidedCAMWizard';
 import CAMAccessibility from './utils/CAMAccessibility';
 import { saveAsDialog } from '../../lib/file-save';
+import { Confirm } from '../../components/ConfirmationDialog/ConfirmationDialogLib';
 import useKeybinding from '../../lib/useKeybinding';
 import { toast } from '../../lib/toaster';
 import { FolderOpen, Save, AlertTriangle, RefreshCcw, Undo2, Redo2, MessageSquareText, FileText, Wand2, HelpCircle, Keyboard, Clock } from 'lucide-react';
@@ -289,6 +290,13 @@ const CAM = () => {
         useKeybinding(shuttleControlEvents);
     }, [shuttleControlEvents]);
 
+    const getBounds = (pts: {x: number, y: number}[]) => {
+        if (!pts || pts.length === 0) return { width: 0, height: 0, minX: 0, maxX: 0, minY: 0, maxY: 0 };
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        pts.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
+        return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
+    };
+
     const handleFileSelect = async (selectedFile: File) => {
         setFile(selectedFile);
         CAMAccessibility.announce(`File ${selectedFile.name} uploaded.`);
@@ -302,13 +310,6 @@ const CAM = () => {
             else if (fileName.endsWith('.step') || fileName.endsWith('.stp')) extractedFeatures = await FileParser.parseSTEP(selectedFile, settings);
             else if (fileName.endsWith('.png') || fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) extractedFeatures = await FileParser.parseImage(selectedFile, settings);
             dispatch(camActions.setFeatures(extractedFeatures));
-
-            const getBounds = (pts: {x: number, y: number}[]) => {
-                if (!pts || pts.length === 0) return { width: 0, height: 0, minX: 0, maxX: 0, minY: 0, maxY: 0 };
-                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-                pts.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
-                return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
-            };
 
             if (extractedFeatures.length > 0) {
                 const globalBounds = getBounds(extractedFeatures.flatMap(f => f.points));
@@ -403,7 +404,7 @@ const CAM = () => {
             requiredLength = (designBounds.height * (settings.scalePercentage / 100)) * settings.nestingY + (settings.nestingSpacing * (settings.nestingY - 1));
         }
         if (requiredWidth > machineMaxX || requiredLength > machineMaxY) {
-            alert(`Toolpath dimensions exceed machine limits.`);
+            toast.error("Toolpath dimensions exceed machine limits.");
             return;
         }
 
@@ -549,12 +550,24 @@ const CAM = () => {
     const splitJobFinished = settings.exportSplitByTool && camState.multiFiles && camState.multiFiles.length > 0 && camState.currentMultiFileIdx >= camState.multiFiles.length;
 
     const handleReset = () => {
-        if (features.length === 0 || window.confirm("Are you sure you want to reset the current CAM session? All unsaved changes will be lost.")) {
-            dispatch(camActions.resetCAM());
-            setFile(null);
-            setHasError(false);
-            CAMAccessibility.announce("Reset.");
+        if (features.length === 0) {
+            performReset();
+            return;
         }
+
+        Confirm({
+            title: 'Reset CAM Session',
+            content: 'Are you sure you want to reset the current CAM session? All unsaved changes will be lost.',
+            confirmLabel: 'Reset',
+            onConfirm: () => performReset()
+        });
+    };
+
+    const performReset = () => {
+        dispatch(camActions.resetCAM());
+        setFile(null);
+        setHasError(false);
+        CAMAccessibility.announce("Reset.");
     };
 
     const handleEditorUpdate = (newGcode: string) => {
@@ -589,12 +602,6 @@ const CAM = () => {
         const updatedFeatures = [...features, ...orderedFeatures];
         dispatch(camActions.setFeatures(updatedFeatures));
         
-        const getBounds = (pts: {x: number, y: number}[]) => {
-            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-            pts.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
-            return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
-        };
-
         const globalBounds = getBounds(updatedFeatures.flatMap(f => f.points));
         setDesignBounds({ width: globalBounds.width, height: globalBounds.height });
 
@@ -610,9 +617,10 @@ const CAM = () => {
             return {
                 id: uuid(),
                 featureId: f.id,
-                type: isContained ? 'inside' : 'outside',
+                type: (f.type === 'hole' || isContained) ? 'inside' : 'outside',
                 depth: settings.stockThickness,
                 toolId: '1',
+                helicalBoring: true,
                 tabs: { enabled: false, count: 4, width: 5, height: 2 }
             };
         });
@@ -896,7 +904,14 @@ const CAM = () => {
                             ) : <p>No file loaded.</p>}
                         </div>
                     )}
-                    <CAMVisualizer features={features} gcode={gcode} settings={settings} onMoveFeature={handleFeatureMove} onMoveEnd={handleMoveEnd} />
+                    <CAMVisualizer 
+                        features={features} 
+                        gcode={gcode} 
+                        settings={settings} 
+                        tools={tools}
+                        onMoveFeature={handleFeatureMove} 
+                        onMoveEnd={handleMoveEnd} 
+                    />
                 </main>
 
                 <aside ref={settingsPanelRef} className="w-1/4 flex flex-col border rounded-md p-2 relative bg-gray-50 dark:bg-dark-light focus:ring-2 focus:ring-blue-500 outline-none" tabIndex={0}>

@@ -19,33 +19,33 @@ interface CAMState {
 const initialState: CAMState = {
     features: [],
     settings: {
-        units: 'mm',
-        zOrigin: 'top',
-        millingSide: 'top',
+        units: store.get('workspace.units', 'mm'),
+        zOrigin: store.get('cam.settings.zOrigin', 'top'),
+        millingSide: store.get('cam.settings.millingSide', 'top'),
         scalingType: 'percentage',
-        rasterResolution: 'adaptive',
-        customResolutionValue: 0.1,
-        optimizePath: true,
+        rasterResolution: store.get('cam.settings.rasterResolution', 'adaptive'),
+        customResolutionValue: store.get('cam.settings.customResolutionValue', 0.1),
+        optimizePath: store.get('cam.settings.optimizePath', true),
         scalePercentage: 100,
         targetWidth: 0,
         targetHeight: 0,
-        safeZ: 5,
-        spindle: 'M3',
-        mist: false,
-        flood: false,
-        stockWidth: 100,
-        stockLength: 100,
-        stockThickness: 10,
+        safeZ: store.get('cam.settings.safeZ', 5),
+        spindle: store.get('cam.settings.spindle', 'M3'),
+        mist: store.get('cam.settings.mist', false),
+        flood: store.get('cam.settings.flood', false),
+        stockWidth: store.get('cam.settings.stockWidth', 100),
+        stockLength: store.get('cam.settings.stockLength', 100),
+        stockThickness: store.get('cam.settings.stockThickness', 10),
         nestingX: 1,
         nestingY: 1,
         nestingSpacing: 5,
-        startGcode: '',
-        endGcode: '',
-        gcodeComments: true,
-        gcodeLineNumbers: false,
-        showSafetyChecklist: true
+        startGcode: store.get('cam.settings.startGcode', ''),
+        endGcode: store.get('cam.settings.endGcode', ''),
+        gcodeComments: store.get('cam.settings.gcodeComments', true),
+        gcodeLineNumbers: store.get('cam.settings.gcodeLineNumbers', false),
+        showSafetyChecklist: store.get('cam.settings.showSafetyChecklist', true)
     },
-    tools: [],
+    tools: store.get('workspace.tools', []),
     pathingOptions: [],
     gcode: '',
     originalGcode: '',
@@ -65,12 +65,19 @@ const camSlice = createSlice({
         },
         setSettings: (state, action: PayloadAction<CAMSettings>) => {
             state.settings = action.payload;
+            Object.keys(action.payload).forEach(key => {
+                store.set(`cam.settings.${key}`, (action.payload as any)[key]);
+            });
         },
         updateSettings: (state, action: PayloadAction<Partial<CAMSettings>>) => {
             state.settings = { ...state.settings, ...action.payload };
+            Object.keys(action.payload).forEach(key => {
+                store.set(`cam.settings.${key}`, (action.payload as any)[key]);
+            });
         },
         setTools: (state, action: PayloadAction<CAMTool[]>) => {
             state.tools = action.payload;
+            store.set('workspace.tools', action.payload);
         },
         setPathingOptions: (state, action: PayloadAction<CAMPathingOption[]>) => {
             state.pathingOptions = action.payload;
