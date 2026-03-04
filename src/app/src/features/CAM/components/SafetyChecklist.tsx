@@ -70,7 +70,7 @@ const SafetyChecklist = ({ onConfirm, onCancel }: SafetyChecklistProps) => {
                             disabled={!allChecked}
                             onClick={() => onConfirm(skipForever)}
                         >
-                            <CheckCircle size={16} aria-hidden="true" /> Generate G-Code
+                            <CheckCircle size={16} aria-hidden="true" /> Load to Workspace
                         </Button>
                     </div>
                 </div>
