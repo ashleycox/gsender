@@ -26,9 +26,10 @@ import { saveAsDialog } from '../../lib/file-save';
 import { Confirm } from '../../components/ConfirmationDialog/ConfirmationDialogLib';
 import useKeybinding from '../../lib/useKeybinding';
 import { toast } from '../../lib/toaster';
-import { FolderOpen, Save, AlertTriangle, RefreshCcw, Undo2, Redo2, MessageSquareText, FileText, Wand2, HelpCircle, Keyboard, Clock } from 'lucide-react';
+import { FolderOpen, Save, AlertTriangle, RefreshCcw, Undo2, Redo2, MessageSquareText, FileText, Wand2, HelpCircle, Keyboard, Clock, Pencil } from 'lucide-react';
 import SafetyChecklist from './components/SafetyChecklist';
 import ParametricWizards from './components/ParametricWizards';
+import Canvas from './components/Canvas/Canvas';
 import NestingEngine from './utils/NestingEngine';
 import GCodeEditor from './components/GCodeEditor';
 
@@ -43,7 +44,8 @@ const CAM = () => {
     
     // Redux State
     const { 
-        features, settings, tools, pathingOptions, gcode, originalGcode, estimatedTime, historyIdx, history 
+        features, settings, tools, pathingOptions, gcode, originalGcode, estimatedTime, historyIdx, history,
+        canvasState, focusedFeatureId 
     } = useTypedSelector(state => state.cam);
     const machineSettings = useTypedSelector(state => state.controller.settings?.settings);
 
@@ -55,6 +57,7 @@ const CAM = () => {
     const [showNarrative, setShowNarrative] = useState(false);
     const [showEditor, setShowEditor] = useState(false);
     const [showWizards, setShowWizards] = useState(false);
+    const [showCanvas, setShowCanvas] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
     const [showShortcuts, setShowShortcuts] = useState(false);
     const projectInputRef = useRef<HTMLInputElement>(null);
@@ -625,7 +628,30 @@ const CAM = () => {
             };
         });
         const updatedOptions = [...(pathingOptions || []), ...newOptions];
+        
+        // Architectural Fix 3: Layer-to-Strategy Mapping (Auto-CAM)
+        let smartOptionsAdded = 0;
+        generatedFeatures.forEach(feature => {
+            const layerName = feature.canvasObjectData?.name?.toLowerCase() || '';
+            if (layerName.startsWith('pocket_') || layerName.startsWith('cut_')) {
+                const type = layerName.startsWith('pocket_') ? 'pocket' : 'outside';
+                const optId = uuid();
+                updatedOptions.push({
+                    id: optId,
+                    featureId: feature.id,
+                    type,
+                    depth: settings.stockThickness / 2,
+                    toolId: tools[0]?.id || '1'
+                });
+                smartOptionsAdded++;
+            }
+        });
+
         dispatch(camActions.setPathingOptions(updatedOptions));
+        if (smartOptionsAdded > 0) {
+            toast.info(`Smart Layers: Automatically assigned ${smartOptionsAdded} machining strategies.`);
+        }
+
         pushToHistory();
         CAMAccessibility.announce(`Added ${generatedFeatures.length} features from wizard.`);
     };
@@ -637,6 +663,31 @@ const CAM = () => {
                 onFileSelect={handleFileSelect} onToggleFeature={(id) => dispatch(camActions.setFeatures(features.map(f => f.id === id ? { ...f, selected: !f.selected } : f)))}
                 onSettingsChange={updateSettings} onPathingChange={updatePathing} onGenerate={handleGenerateRequest} onExit={() => setIsWizardMode(false)}
             />
+        );
+    }
+
+    if (showCanvas) {
+        return (
+            <div className="fixed inset-0 z-[500] bg-gray-100 dark:bg-dark">
+                <Canvas 
+                    settings={settings}
+                    existingFeatures={features}
+                    canvasState={canvasState}
+                    focusedFeatureId={focusedFeatureId}
+                    onSaveCanvasState={(json) => dispatch(camActions.setCanvasState(json))}
+                    onAddFeatures={(newFeatures) => {
+                        // If we are editing, replace the features. If we are adding (empty existing), append.
+                        if (features.length > 0) {
+                            dispatch(camActions.setFeatures(newFeatures));
+                        } else {
+                            handleWizardGenerate(newFeatures);
+                        }
+                        pushToHistory();
+                        setShowCanvas(false);
+                    }}
+                    onClose={() => setShowCanvas(false)}
+                />
+            </div>
         );
     }
 
@@ -684,19 +735,32 @@ const CAM = () => {
                     <div className="flex items-center gap-4">
                         <FileSelector onFileSelect={handleFileSelect} hasFeatures={features.length > 0} />
                         <div className="flex flex-col items-center">
-                            <Button 
-                                onClick={() => setShowWizards(true)} 
-                                variant="outline" 
-                                size="sm" 
+                            <Button
+                                onClick={() => setShowWizards(true)}
+                                variant="outline"
+                                size="sm"
                                 className="flex items-center gap-2"
                                 tooltip={{ content: "Open the parametric wizard to create common shapes and designs." }}
                             >
                                 <Wand2 size={16} /> Create Parametric
                             </Button>
                             {showHelp && <span className="text-[10px] text-gray-500 mt-1">Add geometric shapes</span>}
-                        </div>
-                        <div className="h-6 w-px bg-gray-300 dark:bg-gray-700" />
-                        <div className="flex flex-col items-center">
+                            </div>
+
+                            <div className="flex flex-col items-center">
+                            <Button
+                                onClick={() => setShowCanvas(true)}
+                                variant="outline"
+                                size="sm"
+                                className="flex items-center gap-2"
+                                tooltip={{ content: "Open the drawing canvas to create custom 2D designs." }}
+                            >
+                                <Pencil size={16} /> Canvas
+                            </Button>
+                            {showHelp && <span className="text-[10px] text-gray-500 mt-1">Draw custom shapes</span>}
+                            </div>
+
+                            <div className="h-6 w-px bg-gray-300 dark:bg-gray-700" />                        <div className="flex flex-col items-center">
                             <Button 
                                 onClick={() => projectInputRef.current?.click()} 
                                 variant="outline" 
@@ -851,15 +915,16 @@ const CAM = () => {
             <div className="flex flex-1 overflow-hidden gap-4">
                 <aside ref={featurePanelRef} className="w-1/4 flex flex-col border rounded-md p-2 overflow-y-auto focus:ring-2 focus:ring-blue-500 outline-none group" tabIndex={0}>
                     <h2 className="text-lg font-bold mb-2">Features</h2>
-                    <FeatureList 
-                        features={features} 
-                        onToggleFeature={(id) => dispatch(camActions.setFeatures(features.map(f => f.id === id ? { ...f, selected: !f.selected } : f)))} 
+                    <FeatureList
+                        features={features}
+                        onToggleFeature={(id) => dispatch(camActions.setFeatures(features.map(f => f.id === id ? { ...f, selected: !f.selected } : f)))}
+                        onFocusFeature={(id) => dispatch(camActions.setFocusedFeatureId(id))}
                         onBulkToggle={handleBulkToggle}
                         onReorder={handleReorder}
                         settings={settings}
                         options={pathingOptions}
                         tools={tools}
-                        focusedIdx={focusedFeatureIdx}
+                        focusedIdx={features.findIndex(f => f.id === focusedFeatureId)}
                     />
                 </aside>
 
@@ -969,6 +1034,15 @@ const CAM = () => {
                     )}
                 </div>
                 <div className="flex gap-4">
+                    <Button 
+                        onClick={() => setShowCanvas(true)} 
+                        variant="outline"
+                        className="flex items-center gap-2 border-blue-500/50 hover:bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                        tooltip={{ content: "Edit your current design visually in the Canvas tool." }}
+                    >
+                        <Pencil size={16} /> Edit in Canvas
+                    </Button>
+                    <div className="w-px h-8 bg-gray-200 dark:bg-gray-700 mx-2" />
                     <Button onClick={handleGenerateRequest} disabled={features.filter(f => f.selected).length === 0 || isGenerating}>
                         {isGenerating ? 'Generating...' : 'Generate G-Code (Alt+G)'}
                     </Button>

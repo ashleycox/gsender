@@ -14,6 +14,8 @@ interface CAMState {
     estimatedTime: number | null;
     history: { options: CAMPathingOption[], settings: CAMSettings, features: CAMFeature[] }[];
     historyIdx: number;
+    canvasState: string | null; // Stores full Fabric.js JSON
+    focusedFeatureId: string | null; // For Selection-Aware Sync
 }
 
 const initialState: CAMState = {
@@ -53,7 +55,9 @@ const initialState: CAMState = {
     currentMultiFileIdx: 0,
     estimatedTime: null,
     history: [],
-    historyIdx: -1
+    historyIdx: -1,
+    canvasState: null,
+    focusedFeatureId: null
 };
 
 const camSlice = createSlice({
@@ -62,6 +66,12 @@ const camSlice = createSlice({
     reducers: {
         setFeatures: (state, action: PayloadAction<CAMFeature[]>) => {
             state.features = action.payload;
+        },
+        setCanvasState: (state, action: PayloadAction<string | null>) => {
+            state.canvasState = action.payload;
+        },
+        setFocusedFeatureId: (state, action: PayloadAction<string | null>) => {
+            state.focusedFeatureId = action.payload;
         },
         setSettings: (state, action: PayloadAction<CAMSettings>) => {
             state.settings = action.payload;
@@ -147,6 +157,8 @@ const camSlice = createSlice({
 
 export const {
     setFeatures,
+    setCanvasState,
+    setFocusedFeatureId,
     setSettings,
     updateSettings,
     setTools,

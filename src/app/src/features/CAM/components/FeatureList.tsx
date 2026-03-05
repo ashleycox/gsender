@@ -10,6 +10,7 @@ import { ChevronDown, ChevronRight, CornerDownRight, ArrowUp, ArrowDown, AlertTr
 interface FeatureListProps {
     features: CAMFeature[];
     onToggleFeature: (id: string) => void;
+    onFocusFeature?: (id: string) => void;
     onBulkToggle?: (ids: string[], selected: boolean) => void;
     onReorder: (id: string, direction: 'up' | 'down') => void;
     settings: CAMSettings;
@@ -18,7 +19,7 @@ interface FeatureListProps {
     focusedIdx?: number;
 }
 
-const FeatureList = ({ features, onToggleFeature, onBulkToggle, onReorder, settings, options, tools, focusedIdx = -1 }: FeatureListProps) => {
+const FeatureList = ({ features, onToggleFeature, onFocusFeature, onBulkToggle, onReorder, settings, options, tools, focusedIdx = -1 }: FeatureListProps) => {
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
     if (features.length === 0) {
@@ -52,8 +53,9 @@ const FeatureList = ({ features, onToggleFeature, onBulkToggle, onReorder, setti
         return (
             <React.Fragment key={feature.id}>
                 <li 
+                    onClick={() => onFocusFeature?.(feature.id)}
                     className={cx(
-                        "flex items-center gap-2 p-1.5 border-b border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group",
+                        "flex items-center gap-2 p-1.5 border-b border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group cursor-pointer",
                         depth > 0 && "pl-6 bg-gray-50/30 dark:bg-black/10 text-sm",
                         isFocused && "ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-900/20 z-10"
                     )}

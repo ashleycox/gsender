@@ -162,4 +162,8 @@ export interface CAMFeature {
     isEdge?: boolean;
     cylinderRadius?: number; // Smart Boring
     order?: number; // Machining order
+    canvasObjectData?: {
+        name?: string;
+        type?: string;
+    };
 }
