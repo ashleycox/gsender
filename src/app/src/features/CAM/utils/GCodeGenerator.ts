@@ -1,4 +1,5 @@
 import { CAMFeature, CAMPathingOption, CAMSettings, CAMTool } from '../definitions';
+import ClipperLib from 'js-clipper';
 
 const DEFAULT_TOOLS: CAMTool[] = [
     { id: '1', name: '1/8" Endmill', type: 'Endmill', metricDiameter: 3.175, imperialDiameter: 0.125, flutes: 2, stepover: 40, stepdown: 1.5, feedrate: 1000, plungeRate: 300, spindleRPM: 18000, toolLength: 30 },
@@ -25,6 +26,9 @@ export default class GCodeGenerator {
     // Machine-Aware Kinematics
     private accelXY = 500;
     private accelZ = 50;
+
+    // Clipper Scaling
+    private clipperScale = 10000;
 
     constructor(features: CAMFeature[], options: CAMPathingOption[], settings: CAMSettings, tools: CAMTool[], machineSettings?: Record<string, string>) {
         this.features = features;
@@ -112,7 +116,7 @@ export default class GCodeGenerator {
             if (res) lines.push(res);
         };
 
-        push('(--- gSender CAM Generated G-Code ---)');
+        push('(--- gSender CAM Generated G-Code (Optimized with ClipperLib) ---)');
         push(`(STOCK_BOX: W=${this.settings.stockWidth}, L=${this.settings.stockLength}, T=${this.settings.stockThickness}, Z_REF=${this.settings.zOrigin})`);
         
         const vSafeZ = this.settings.safeZ + this.zOffset + 50; 
@@ -324,18 +328,33 @@ export default class GCodeGenerator {
                     const offsetX = nx * (designWidth + this.settings.nestingSpacing);
                     const offsetY = ny * (designHeight + this.settings.nestingSpacing);
                     
-                    let paths = this.calculateToolpaths(feature, option, tool, feature);
+                    // Critical Fix: Scale points and mesh BEFORE calculating toolpaths
+                    // This ensures tool radius and stepover are applied to the physical size
+                    const scaledPoints = feature.points.map(p => ({
+                        x: p.x * this.scaleFactor,
+                        y: p.y * this.scaleFactor,
+                        z: p.z !== undefined ? p.z * this.scaleFactor : undefined
+                    }));
+                    const scaledFeature = {
+                        ...feature,
+                        points: scaledPoints,
+                        meshVertices: feature.meshVertices ? feature.meshVertices.map(v => v * this.scaleFactor) : undefined
+                    };
+
+                    let paths = this.calculateToolpaths(scaledFeature, option, tool, scaledFeature);
                     let activeSetup = this.settings.setups?.find(s => s.id === this.settings.activeSetupId);
                     const orientation = activeSetup?.orientation || 'top';
+                    
                     if (orientation === 'bottom' || this.settings.millingSide === 'bottom') {
-                        const bounds = this.getBounds(feature.points);
+                        const bounds = this.getBounds(scaledPoints);
                         paths = paths.map(path => path.map(p => ({ ...p, x: bounds.maxX - (p.x - bounds.minX) })));
                     }
 
+                    // Only apply nest offsets now
                     paths = paths.map(path => path.map(p => ({ 
-                        x: (p.x * this.scaleFactor) + offsetX, 
-                        y: (p.y * this.scaleFactor) + offsetY,
-                        z: p.z !== undefined ? (p.z * this.scaleFactor) : undefined
+                        x: p.x + offsetX, 
+                        y: p.y + offsetY,
+                        z: p.z
                     })));
 
                     pushLine(`\n(Feature: ${feature.name} | Nest: ${nx},${ny})`);
@@ -577,18 +596,18 @@ export default class GCodeGenerator {
             };
 
             for (let p = 0; p < 50; p++) {
-                const op = this.offsetPath(f.points, cur)[0];
-                if (!op || op.length === 0) break;
-                let minX = Infinity, maxX = -Infinity; op.forEach(pt => { minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x); });
-                if (maxX - minX < 0.1 || op.length < 3) break;
+                const offsetPaths = this.offsetPath(f.points, cur);
+                if (offsetPaths.length === 0) break;
                 
-                vPaths.push(op.map(pt => {
-                    // True Dynamic V-Carve: Z varies based on exact distance to closest boundary wall
-                    const exactDist = minDistanceToBoundary(pt);
-                    let dynDepth = Math.min(exactDist / Math.tan((angle / 2) * Math.PI / 180), flatDepth);
-                    if (startDepth > 0 && dynDepth < startDepth) dynDepth = startDepth;
-                    return { ...pt, z: -dynDepth };
-                }));
+                offsetPaths.forEach(op => {
+                    if (op.length < 3) return;
+                    vPaths.push(op.map(pt => {
+                        const exactDist = minDistanceToBoundary(pt);
+                        let dynDepth = Math.min(exactDist / Math.tan((angle / 2) * Math.PI / 180), flatDepth);
+                        if (startDepth > 0 && dynDepth < startDepth) dynDepth = startDepth;
+                        return { ...pt, z: -dynDepth };
+                    }));
+                });
                 cur += (dir * step);
             }
             return vPaths.reverse();
@@ -696,13 +715,22 @@ export default class GCodeGenerator {
 
         const comp = new Float32Array(zBuffer.length);
         const tR = tool.metricDiameter / 2, tRC = Math.ceil(tR / res), kernel = [];
+        const halfAngleRad = ((tool.angle || 60) / 2) * Math.PI / 180;
+
         for (let dr = -tRC; dr <= tRC; dr++) {
             for (let dc = -tRC; dc <= tRC; dc++) {
                 const dist = Math.hypot(dc * res, dr * res);
                 if (dist <= tR) {
                     let dz = 0;
-                    if (tool.type === 'Ballnose') dz = Math.sqrt(tR * tR - dist * dist) - tR;
-                    else if (tool.type === 'V-Bit') dz = dist * Math.tan((90 - ((tool.angle || 60) / 2)) * Math.PI / 180) - tR;
+                    if (tool.type === 'Ballnose') {
+                        // Height of the ball surface above the tip at distance 'dist'
+                        dz = tR - Math.sqrt(tR * tR - dist * dist);
+                    } else if (tool.type === 'V-Bit') {
+                        // Height of the cone surface above the tip at distance 'dist'
+                        dz = dist / Math.tan(halfAngleRad);
+                    }
+                    // k.dz is the height of the tool surface at (dc, dr) relative to the tip.
+                    // To find the highest tip Z that doesn't collide: tipZ = meshZ - dz
                     kernel.push({ dc, dr, dz });
                 }
             }
@@ -774,58 +802,47 @@ export default class GCodeGenerator {
         return finalPaths;
     }
 
-    private offsetPath(pts: {x: number, y: number, z?: number}[], dist: number) {
+    private offsetPath(pts: {x: number, y: number, z?: number}[], dist: number): {x: number, y: number, z?: number}[][] {
         if (!pts || pts.length < 3) return [pts || []];
-        let area = 0;
-        for (let i = 0; i < pts.length; i++) {
-            const p1 = pts[i], p2 = pts[(i + 1) % pts.length];
-            area += (p2.x - p1.x) * (p2.y + p1.y);
+        
+        try {
+            const clipperPath = pts.map(p => ({ X: Math.round(p.x * this.clipperScale), Y: Math.round(p.y * this.clipperScale) }));
+            const offset = new ClipperLib.ClipperOffset();
+            offset.AddPath(clipperPath, ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
+            
+            const solution: any[][] = [];
+            offset.Execute(solution, dist * this.clipperScale);
+            
+            return solution.map(path => path.map(p => ({ x: p.X / this.clipperScale, y: p.Y / this.clipperScale, z: pts[0].z })));
+        } catch (e) {
+            console.error("Clipper offset failed, falling back to original path", e);
+            return [pts];
         }
-        const isClockwise = area > 0;
-        const res = [];
-        for (let i = 0; i < pts.length; i++) {
-            const p = pts[(i - 1 + pts.length) % pts.length], c = pts[i], n = pts[(i + 1) % pts.length];
-            const dx1 = c.x - p.x, dy1 = c.y - p.y, dx2 = n.x - c.x, dy2 = n.y - c.y;
-            const l1 = Math.hypot(dx1, dy1) || 1, l2 = Math.hypot(dx2, dy2) || 1;
-            let nx1, ny1, nx2, ny2;
-            if (isClockwise) { nx1 = -dy1 / l1; ny1 = dx1 / l1; nx2 = -dy2 / l2; ny2 = dx2 / l2; }
-            else { nx1 = dy1 / l1; ny1 = -dx1 / l1; nx2 = dy2 / l2; ny2 = -dx2 / l2; }
-            const nx = (nx1 + nx2) / 2, ny = (ny1 + ny2) / 2, l = Math.sqrt(nx * nx + ny * ny) || 0.0001;
-            const miterDist = Math.min(Math.abs(dist / l), Math.abs(dist) * 5) * Math.sign(dist);
-            res.push({ x: c.x + (nx / l) * miterDist, y: c.y + (ny / l) * miterDist, z: c.z });
-        }
-        return [res];
     }
 
     private generatePocketToolpaths(pts: {x: number, y: number, z?: number}[], tool: CAMTool, featureType: string) {
         if (!pts || pts.length === 0) return [];
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        pts.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
-        const toolRadius = tool.metricDiameter / 2, step = Math.max(0.00001, tool.metricDiameter * (tool.stepover / 100));
-        if (featureType === 'rectangle') {
-            const startX = minX + toolRadius, endX = maxX - toolRadius, startY = minY + toolRadius, endY = maxY - toolRadius;
-            if (endX < startX || endY < startY) return [[{x: (minX + maxX) / 2, y: (minY + maxY) / 2}]];
-            const paths = [], zigZagPath = []; let curY = startY, goingRight = true;
-            while (curY <= endY) {
-                if (goingRight) { zigZagPath.push({ x: startX, y: curY }); zigZagPath.push({ x: endX, y: curY }); }
-                else { zigZagPath.push({ x: endX, y: curY }); zigZagPath.push({ x: startX, y: curY }); }
-                curY = (curY < endY && curY + step > endY) ? endY : curY + step;
-                goingRight = !goingRight;
-            }
-            paths.push(zigZagPath); return paths;
+        
+        const toolRadius = tool.metricDiameter / 2;
+        const step = Math.max(0.00001, tool.metricDiameter * (tool.stepover / 100));
+        const paths: {x: number, y: number, z?: number}[][] = [];
+        
+        // Initial offset to account for tool radius
+        let currentOffset = -toolRadius;
+        
+        for (let i = 0; i < 200; i++) {
+            const offsetResult = this.offsetPath(pts, currentOffset);
+            if (offsetResult.length === 0) break;
+            
+            paths.push(...offsetResult);
+            currentOffset -= step;
+            
+            // Safety check: if total offset is larger than the bounding box, we've likely cleared the pocket
+            const bounds = this.getBounds(pts);
+            if (Math.abs(currentOffset) > Math.max(bounds.width, bounds.height)) break;
         }
-        const paths = []; let cur = -toolRadius; 
-        for (let p = 0; p < 100; p++) {
-            const op = this.offsetPath(pts, cur)[0];
-            let oMinX = Infinity, oMaxX = -Infinity, oMinY = Infinity, oMaxY = -Infinity; 
-            op.forEach(pt => { oMinX = Math.min(oMinX, pt.x); oMaxX = Math.max(oMaxX, pt.x); oMinY = Math.min(oMinY, pt.y); oMaxY = Math.max(oMaxY, pt.y); });
-            if ((oMaxX - oMinX) < tool.metricDiameter && (oMaxY - oMinY) < tool.metricDiameter) { if (op.length > 0) paths.push(op); break; }
-            let area = 0;
-            for (let i = 0; i < op.length; i++) { const p1 = op[i], p2 = op[(i + 1) % op.length]; area += (p2.x - p1.x) * (p2.y + p1.y); }
-            if (area <= 0) break;
-            paths.push(op); cur -= step;
-        }
-        return paths.reverse();
+        
+        return paths.reverse(); // Cut from inside out for better finish
     }
 
     private calculateCenter(pts: {x: number, y: number}[]) { 
