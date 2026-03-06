@@ -51,6 +51,14 @@ const deps = _uniq([
     'debug',
     'is-electron',
     'commander',
+    'fabric',
+    'js-clipper',
+    'simplify-js',
+    'qrcode-svg',
+    'potpack',
+    'imagetracerjs',
+    'uuid',
+    'occt-import-js',
     ...resolvedImports.map((x) => x.split('/')[0]),
 ]).sort();
 

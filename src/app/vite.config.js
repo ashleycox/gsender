@@ -29,8 +29,8 @@ export default defineConfig({
         tailwindcss(),
         nodePolyfills({
             // To add only specific polyfills, add them here. If no option is passed, adds all polyfills
-            include: ['process'],
-            globals: { global: true, process: true },
+            include: ['process', 'fs', 'path', 'crypto', 'util', 'stream', 'buffer'],
+            globals: { global: true, process: true, Buffer: true },
         }),
         sentryVitePlugin({
             org: process.env.SENTRY_ORG,
@@ -53,11 +53,20 @@ export default defineConfig({
         },
     },
     optimizeDeps: {
-        include: ['**/*.styl', '@emotion/react', '@emotion/styled', '@mui/material'],
+        include: [
+            '**/*.styl', 
+            '@emotion/react', 
+            '@emotion/styled', 
+            '@mui/material',
+            'js-clipper',
+            'simplify-js',
+            'qrcode-svg',
+            'fabric'
+        ],
     },
     worker: {
         format: 'es',
-        plugins: [
+        plugins: () => [
             tsconfigPaths(),
         ],
     },

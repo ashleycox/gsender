@@ -24,7 +24,7 @@
 import React, { PureComponent } from 'react';
 import pubsub from 'pubsub-js';
 import { CSSTransition, TransitionGroup } from 'react-transition-group';
-import uuid from 'uuid';
+import { v4 as uuid } from 'uuid';
 import styles from './toaster.styl';
 import Toast from './Toast';
 import { TOASTER_DEFAULT, TOASTER_UNTIL_CLOSE } from './ToasterLib';

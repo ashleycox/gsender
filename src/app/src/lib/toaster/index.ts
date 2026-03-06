@@ -1,5 +1,5 @@
 import { toast as sonnerToast } from 'sonner';
-import uuid from 'uuid';
+import { v4 as uuidv4 } from 'uuid';
 import get from 'lodash/get';
 
 import store from 'app/store';
@@ -59,7 +59,7 @@ const saveNotificationToStore = ({
         type,
         status: 'unread',
         timestamp: new Date().toISOString(),
-        id: uuid.v4(),
+        id: uuidv4(),
     });
 
     reduxStore.dispatch(setNotifications(notifications));
